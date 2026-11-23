@@ -1,28 +1,32 @@
-# DarkGPT CLI / TUI
+<div align="center">
 
-DarkGPT is a terminal-first AI coding and security-research agent with a Textual TUI, native tool calling, MCP, skills, browser automation, self-learning, and target-centric recon/reporting.
+# ⚡ DarkGPT CLI
 
-> Built for authorized security research, CTF, pentest labs, and engineering workflows. Do not use against systems without explicit permission.
+**The terminal AI agent that codes, investigates, learns from its mistakes, and builds proof-first security reports.**
 
-## Highlights
+[![MIT License](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![TUI](https://img.shields.io/badge/Interface-Textual_TUI-00D4AA)](https://textual.textualize.io/)
+[![MCP](https://img.shields.io/badge/MCP-supported-7C3AED)](https://modelcontextprotocol.io/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-- **TUI-first workflow** — fast prompt loop, streaming phases, tool cards, diff cards, sessions, checkpoints, copy/paste, command palette.
-- **Native tools + safe fallback** — structured tool calls first; ReAct fallback is controlled (`/react on|off`), not a silent downgrade.
-- **Self-learning** — durable lessons/patterns captured from failures and repeated signals; injected into future turns (`/lessons`, `/patterns`, `/learn`).
-- **Skill system** — Markdown skills with frontmatter, nested `<skill>/SKILL.md` bundles, active/inactive state. HackSkills router is included and active by default.
-- **MCP integration** — stdio/HTTP MCP servers, tool discovery, per-server enable/disable, background/verbose display.
-- **Browser automation** — built-in `browser` tool (Playwright with Selenium fallback), session cookies, JS rendering, forms/clicks/extract/screenshot.
-- **Coding brain** — read/write/edit/patch, LSP, git, verify/lint/test, review, subagents, hooks, permissions, scripts, checkpoints, memory.
+[Quickstart](#-quickstart) · [Features](#-what-makes-it-different) · [Security Mode](#-security--recon-mode) · [Commands](#-command-cheatsheet) · [Contributing](#-contributing)
 
-## Core Security / Recon Reasoning
+</div>
 
-- **Dynamic target state** — per-target knowledge graph: `hosts → services → endpoints → findings`, persisted under `~/.config/darkgpt/targets/<slug>/`.
-- **Evidence ledger** — append-only `evidence.jsonl` with SHA-256, timestamps, redacted args/result previews; tool results auto-captured when a target is active.
-- **Adaptive hypothesis loop** — failures/blocks are treated as signal; agent updates state, mutates approach, pivots route, and records lessons.
-- **Multi-agent orchestration** — `delegate`/`spawn_agent` roles: `explore`, `review`, `test`, `recon`, `vuln_analysis`, `exploit_validation`, `reporting`; `recon_orchestrate` runs parallel recon and merges into graph.
-- **Proof-first reporting** — findings track `attempted/proved/false_positive`, reproduction, impact, remediation, evidence refs. `report_generate` outputs Markdown/HTML.
+---
 
-## Install
+## Why DarkGPT?
+
+Most AI CLIs can chat about code. **DarkGPT works inside your terminal like an operator**: it reads files, runs tools, browses JS-heavy sites, spawns subagents, remembers lessons, tracks target state, and produces evidence-backed reports.
+
+- **For developers:** native tool-calling agent with LSP, git, diffs, undo, verify/review loops, scripts, checkpoints.
+- **For security researchers:** HackSkills routing, target knowledge graph, append-only evidence ledger, proof-first reporting, parallel recon orchestration.
+- **For power users:** MCP servers, browser automation, self-learning patterns, session resume, permission/hook controls.
+
+> ⚠️ **Authorized use only.** DarkGPT is built for systems you own or have explicit written permission to test.
+
+## 🚀 Quickstart
 
 ```bash
 git clone https://github.com/sharma5pac/DARK-GPT-CLI-.git
@@ -30,50 +34,131 @@ cd DARK-GPT-CLI-
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
 cp .env.example .env
-# edit .env with your API keys
-```
+# add your keys in .env
 
-## Run
-
-```bash
 ./darkgpt
-# or
-python darkgpt_cli.py
 ```
 
-## Configuration
-
-Set keys in `.env` (never commit real keys):
+### Minimal `.env`
 
 ```env
 OPENROUTER_API_KEY=your-openrouter-key-here
+# optional
 NVIDIA_API_KEY=your-nvidia-key-here
 ```
 
-User config lives in `~/.config/darkgpt/config.json`. MCP config in `~/.config/darkgpt/mcp.json`.
+## ✨ What Makes It Different
 
-## Key Commands
-
-| Command | Purpose |
+| Capability | What it does |
 |---|---|
-| `/model` `/provider` | Select model/provider |
-| `/target <name>` | Set active target for graph/evidence/report |
-| `/targets` `/kg` `/evidence` | Inspect target knowledge graph and evidence |
-| `/recon [focus]` | Parallel recon orchestration into active target graph |
-| `/report md\|html [out]` | Generate report from graph + evidence |
-| `/lessons` `/patterns` `/learn` | Inspect/toggle self-learning |
+| **Native tool calling first** | Uses structured tool calls; controlled ReAct fallback (`/react on|off`) instead of silent degradation |
+| **Self-learning memory** | Captures durable lessons/patterns from failures and repeated signals; injects them into future turns |
+| **HackSkills engine** | Active security skill router with deep topic skills for recon, API, auth, injection, cloud, AD, mobile, binary, and more |
+| **Browser automation** | Real browser actions (Playwright → Selenium fallback) for JS-heavy pages, forms, clicks, extraction, screenshots |
+| **MCP-native** | Connect stdio/HTTP MCP servers; discover and call tools; per-server toggles |
+| **Proof-first security workflow** | Findings tracked as `attempted/proved/false_positive` with evidence refs, repro, impact, remediation |
+| **Operator UX** | Textual TUI, streaming phases, tool cards, diff cards, undo, sessions/checkpoints, copy/paste |
+
+## 🧠 Security / Recon Mode
+
+Set a target and DarkGPT builds a persistent investigation state:
+
+```text
+/target example.com
+/recon
+/kg
+/evidence
+/report md
+```
+
+### What gets built automatically
+
+- **Knowledge graph** — `hosts → services → endpoints → findings` in `~/.config/darkgpt/targets/<slug>/graph.json`
+- **Evidence ledger** — append-only `evidence.jsonl` with SHA-256, timestamps, redacted previews, tool args/results
+- **Report** — Markdown/HTML report from graph + evidence with proved vs attempted separation
+
+### Core pentest reasoning
+
+- **Dynamic state management** — active target state injected into context every turn
+- **Adaptive hypothesis loop** — every probe is a hypothesis; on block/failure, pivot and record the lesson
+- **Multi-agent orchestration** — `recon`, `vuln_analysis`, `exploit_validation`, `reporting` subagent roles
+- **Vulnerability chaining** — correlate findings across assets and workflows
+- **Proof-first boundary** — no “proved” without reproducible evidence
+
+## 🛠 Developer Mode
+
+DarkGPT is also a serious coding agent:
+
+- `read/write/edit/patch/apply_patch` with diff preview and undo
+- LSP definitions/references/diagnostics/rename
+- git status/diff/log/blame
+- verify/review loops and test feedback
+- isolated read-only subagents for explore/review/test
+- project rules (`CLAUDE.md`, `AGENTS.md`, `DARKGPT.md`, `.darkgpt/rules.md`)
+- hooks + permissions (`full` / `ask` / `strict`)
+- bounded helper scripts saved as evidence
+
+## ⌨️ Command Cheatsheet
+
+| Command | What it does |
+|---|---|
+| `/model` `/provider` | Pick model/provider |
+| `/target <name>` | Set active recon target |
+| `/targets` `/kg` `/evidence` `/report` | Inspect graph, evidence, generate report |
+| `/recon [focus]` | Run parallel recon orchestration |
 | `/skills` `/mcp` `/tools` | Manage skills, MCP servers, tools |
-| `/diff` `/undo` `/verify` `/review` | Edit safety and verification |
-| `/checkpoint` `/sessions` `/resume` | Session checkpoints |
-| `/permissions` `/hooks` | Runtime controls |
+| `/lessons` `/patterns` `/learn` | Self-learning controls |
+| `/diff` `/undo` `/verify` `/review` | Safe code-change workflow |
+| `/checkpoint` `/sessions` `/resume` | Session state management |
+| `/permissions` `/hooks` | Runtime safety controls |
+| `/help` | Full command palette |
 
-## Security Notes
+## 🧩 Architecture
 
-- Use only on systems you own or have explicit written authorization to test.
-- Evidence and reports may contain sensitive data; handle them as confidential.
-- The agent records evidence locally; review before sharing.
-- `.env`, local caches, and private runtime state should not be committed.
+```text
+User prompt
+   │
+   ▼
+Textual TUI ──► Agent Core (native tools / controlled fallback)
+                    │
+                    ├─ Tool Registry (fs, git, lsp, shell, browser, MCP, scripts)
+                    ├─ Skill Registry (HackSkills + custom skills)
+                    ├─ Self-Learning (lessons/patterns)
+                    ├─ Subagents (recon/vuln/validation/reporting/explore/review/test)
+                    ├─ Knowledge Graph (target state)
+                    └─ Evidence Ledger + Report Generator
+```
+
+## 🔒 Safety & Responsible Use
+
+- Only test assets you own or are explicitly authorized to assess.
+- Treat evidence, reports, tokens, cookies, and dumps as sensitive.
+- `.env` and local runtime data are ignored by git; keep secrets out of commits.
+- Review findings manually before acting on “proved” claims.
+
+## 🤝 Contributing
+
+PRs are welcome. High-impact areas:
+
+- new MCP integrations
+- recon adapters and parsers
+- report templates
+- skill packs
+- UI/UX improvements
+- tests and evals
+
+```bash
+# dev setup
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m compileall agent utils tui tests
+```
+
+## ⭐ Support the Project
+
+If DarkGPT saves you time in the terminal, **star the repo** and share it with builders/security folks who want an agent that actually does the work.
 
 ## License
 
