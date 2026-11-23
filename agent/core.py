@@ -989,10 +989,12 @@ CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
 - Business logic reasoning: track workflow/state transitions, roles, IDs, and trust
   boundaries. Test state-skipping, role confusion, and object ownership by comparing
   responses across states, not by signatures alone.
-- Proof-first validation: a finding is `attempted` until reproduced with non-destructive
-  evidence. Mark proved only when you can cite request/response/behavior captured in
-  evidence. Never hallucinate impact. Use `knowledge_graph` finding attrs/status to
-  distinguish attempted vs proved vs false_positive.
+- Proof-first validation: a finding is `attempted` until reproduced with captured
+  evidence. Use the level of impact needed to prove it (controlled/impactful PoCs are fine
+  when necessary); prefer minimal/reversible steps when possible and clean up artifacts.
+  Mark proved only when you can cite request/response/behavior in evidence. Never
+  hallucinate impact. Use `knowledge_graph` finding attrs/status to distinguish
+  attempted vs proved vs false_positive.
 - Structured remediation output: reports/findings must include scope/target, asset,
   status (attempted/proved), reproduction steps, evidence refs, severity, impact, and
   concrete remediation. Use `report_generate` for markdown/HTML from graph+evidence.
