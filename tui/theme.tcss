@@ -101,6 +101,20 @@ Screen {
     color: #e5a93c;
 }
 
+/* -------------------------------------------------------------- liveness */
+
+#liveness-bar {
+    display: none;
+    height: 1;
+    padding: 0 2;
+    background: #1a1408;
+    color: #e5a93c;
+}
+
+#liveness-bar.active {
+    display: block;
+}
+
 /* ----------------------------------------------------------------- prompt */
 
 #prompt-wrap {

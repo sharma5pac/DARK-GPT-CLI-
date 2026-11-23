@@ -150,6 +150,77 @@ def add_endpoint(target: str, url: str, attrs: Optional[Dict[str, Any]] = None, 
     return ep
 
 
+FINDING_STATUSES = {"attempted", "proved", "false_positive"}
+SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def _normalize_status(status: Any) -> str:
+    s = str(status or "attempted").strip().lower().replace(" ", "_")
+    aliases = {"verified": "proved", "confirmed": "proved", "unverified": "attempted", "fp": "false_positive", "false-positive": "false_positive"}
+    s = aliases.get(s, s)
+    return s if s in FINDING_STATUSES else "attempted"
+
+
+def _evidence_ref_exists(target: str, evidence_ref: str) -> bool:
+    ref = str(evidence_ref or "").strip()
+    if not ref:
+        return False
+    try:
+        from agent import evidence as _ev
+        return _ev.has_ref(target, ref)
+    except Exception:
+        # fallback: direct scan
+        try:
+            p = target_dir(target) / "evidence.jsonl"
+            if not p.exists():
+                return False
+            needle = ref.lower()
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                eid = str(e.get("id") or "").lower()
+                sha = str(e.get("result_sha256") or "").lower()
+                if needle in (eid, sha) or sha.startswith(needle) or eid.startswith(needle):
+                    return True
+        except Exception:
+            return False
+    return False
+
+
+def add_credential(target: str, name: str, kind: str = "token", attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    # Never store raw secrets; store redacted ref/hash only.
+    a = dict(attrs or {})
+    secret = str(a.pop("secret", "") or a.pop("value", "") or "")
+    ref = a.get("ref") or (hashlib.sha256(secret.encode("utf-8", "replace")).hexdigest()[:16] if secret else "")
+    a.update({"name": name, "kind": kind, "ref": ref, "redacted": bool(secret) or bool(a.get("redacted"))})
+    node = upsert_node(target, "credential", f"{kind}:{name}:{ref}", a, source=source)
+    return node
+
+
+def add_auth_state(target: str, host: str, state: str, attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    identity = f"{host}:{state}"
+    node = upsert_node(target, "auth_state", identity, {"host": host, "state": state, **(attrs or {})}, source=source)
+    h = add_host(target, host, source=source)
+    add_edge(target, h["key"], node["key"], "has_auth_state")
+    return node
+
+
+def add_param(target: str, endpoint: str, name: str, location: str = "query", attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    identity = f"{endpoint}:{location}:{name}"
+    node = upsert_node(target, "param", identity, {"endpoint": endpoint, "name": name, "location": location, **(attrs or {})}, source=source)
+    ep = add_endpoint(target, endpoint, source=source)
+    add_edge(target, ep["key"], node["key"], "has_param")
+    return node
+
+
+def add_fingerprint(target: str, asset: str, fingerprint: str, attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    identity = f"{asset}:{fingerprint[:80]}"
+    node = upsert_node(target, "fingerprint", identity, {"asset": asset, "fingerprint": fingerprint[:500], **(attrs or {})}, source=source)
+    return node
+
+
 def add_finding(
     target: str,
     title: str,
@@ -159,10 +230,32 @@ def add_finding(
     attrs: Optional[Dict[str, Any]] = None,
     source: str = "",
 ) -> Dict[str, Any]:
-    identity = f"{severity}:{title}:{details[:80]}"
+    a = dict(attrs or {})
+    status = _normalize_status(a.get("status", "attempted"))
+    sev = str(severity or a.get("severity") or "info").strip().lower()
+    if sev not in SEVERITY_ORDER:
+        sev = "info"
+    evidence_ref = str(evidence_ref or a.get("evidence_ref") or "").strip()
+    if status == "proved" and not _evidence_ref_exists(target, evidence_ref):
+        # proof gate: never mark proved without evidence ref present in ledger
+        a["proof_gate_blocked"] = True
+        a["proof_gate_reason"] = "proved status requires evidence_ref present in evidence ledger"
+        status = "attempted"
+    a["status"] = status
+    a["severity"] = sev
+    identity = f"{sev}:{title}:{str(a.get('asset') or details)[:80]}"
     node = upsert_node(target, "finding", identity, {
-        "title": title, "severity": severity, "details": details[:2000],
-        "evidence_ref": evidence_ref, **(attrs or {}),
+        "title": title,
+        "severity": sev,
+        "status": status,
+        "details": details[:4000],
+        "evidence_ref": evidence_ref,
+        "asset": str(a.get("asset") or ""),
+        "repro": str(a.get("repro") or a.get("reproduction") or "")[:4000],
+        "impact": str(a.get("impact") or "")[:2000],
+        "remediation": str(a.get("remediation") or "")[:2000],
+        "confidence": a.get("confidence"),
+        **{k: v for k, v in a.items() if k not in {"title", "severity", "status", "details", "evidence_ref"}},
     }, source=source)
     return node
 
@@ -209,8 +302,10 @@ def summary(target: str) -> Dict[str, Any]:
         "recent_findings": [
             {
                 "severity": n.get("attrs", {}).get("severity"),
+                "status": n.get("attrs", {}).get("status", "attempted"),
                 "title": n.get("attrs", {}).get("title"),
                 "details": (n.get("attrs", {}).get("details") or "")[:160],
+                "evidence_ref": n.get("attrs", {}).get("evidence_ref", ""),
             }
             for n in query(target, kind="finding", limit=10)
         ],
@@ -265,3 +360,25 @@ def merge(target: str, other_graph: Dict[str, Any], source: str = "merge") -> Di
     graph["edges"] = (graph.get("edges") or [])[-2000:]
     _save(target, graph)
     return summary(target)
+
+
+def export_graph(target: str, fmt: str = "json") -> Dict[str, Any]:
+    fmt = str(fmt or "json").lower().strip()
+    graph = _load(target)
+    if fmt in ("json", ""):
+        return {"format": "json", "graph": graph, "path": str(graph_path(target))}
+    if fmt in ("dot", "graphviz"):
+        lines = ["digraph KG {"]
+        for k, n in (graph.get("nodes") or {}).items():
+            label = f"{n.get('kind')}\\n{str(n.get('id',''))[:40]}"
+            label = label.replace('"', "'")
+            lines.append(f'  "{k}" [label="{label}"];')
+        for e in graph.get("edges") or []:
+            rel = str(e.get("rel", "related")).replace('"', "'")
+            lines.append(f'  "{e.get("src")}" -> "{e.get("dst")}" [label="{rel}"];')
+        lines.append("}")
+        dot = "\n".join(lines)
+        out = target_dir(target) / "graph.dot"
+        out.write_text(dot, encoding="utf-8")
+        return {"format": "dot", "path": str(out), "bytes": len(dot.encode("utf-8"))}
+    raise ValueError("format must be json or dot/graphviz")

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 SESSION_DIR = Path.home() / ".cache" / "darkgpt" / "browser"
 WORKER = Path(__file__).with_name("browser_worker.py")
-DEFAULT_TIMEOUT = 90
+DEFAULT_TIMEOUT = 120
 
 
 def _system_python() -> str:
@@ -73,34 +73,104 @@ def run(
     if isinstance(actions, dict):
         actions = [actions]
     steps: List[Dict[str, Any]] = []
+    def _norm(a: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(a, str):
+            if a.startswith(("http://", "https://", "file://", "data:")):
+                return {"action": "navigate", "url": a}
+            return {"action": "extract", "selector": a}
+        if not isinstance(a, dict):
+            return None
+        d = dict(a)
+        if d.get("action"):
+            return d
+        # Tolerate shorthand shapes the model often emits.
+        for k in ("navigate", "goto", "open", "url"):
+            if k in d and isinstance(d[k], str):
+                return {"action": "navigate", "url": d[k], **{x: y for x, y in d.items() if x != k}}
+        if "wait" in d:
+            w = d["wait"]
+            if isinstance(w, dict):
+                return {"action": "wait", **w}
+            if isinstance(w, (int, float)):
+                return {"action": "wait", "ms": int(w)}
+            if isinstance(w, str):
+                return {"action": "wait", "selector": w}
+        for k in ("click", "fill", "extract", "screenshot", "scroll", "js", "crawl", "rank", "search"):
+            if k in d:
+                v = d[k]
+                if isinstance(v, dict):
+                    return {"action": k, **v}
+                if k == "click":
+                    return {"action": "click", "selector": str(v) if not str(v).startswith("//") else "", "text": "", "xpath": str(v) if str(v).startswith("//") else ""}
+                if k == "fill":
+                    return {"action": "fill", **(v if isinstance(v, dict) else {"selector": "", "value": str(v)})}
+                if k == "extract":
+                    return {"action": "extract", "selector": str(v)}
+                if k == "screenshot":
+                    return {"action": "screenshot", "path": str(v)}
+                if k == "scroll":
+                    return {"action": "scroll", "direction": str(v)}
+                if k == "js":
+                    return {"action": "js", "script": str(v)}
+                if k in ("crawl", "rank", "search"):
+                    return {"action": k, "query": str(v) if not isinstance(v, dict) else "", **(v if isinstance(v, dict) else {})}
+        if "ms" in d or "seconds" in d:
+            return {"action": "wait", **d}
+        if "selector" in d and "value" in d:
+            return {"action": "fill", **d}
+        if "selector" in d or "mode" in d:
+            return {"action": "extract", **d}
+        return d
+
     for item in actions or []:
-        if isinstance(item, str):
-            steps.append({"action": "navigate", "url": item} if item.startswith(("http://", "https://")) else {"action": "extract", "selector": item})
-        elif isinstance(item, dict):
-            steps.append(item)
+        n = _norm(item)
+        if n:
+            steps.append(n)
     if not steps:
         return {"ok": False, "error": "no browser actions supplied"}
 
+    # Clamp up: agents often pass small timeouts; slow/JS-heavy sites need room.
+    timeout = max(45, min(int(timeout or DEFAULT_TIMEOUT), 180))
     state = _load_session(str(session)[:40] or "default")
     job = {
         "actions": steps,
         "engine": str(engine or "auto"),
         "headless": bool(headless),
-        "nav_timeout": max(5, min(int(timeout or DEFAULT_TIMEOUT), 180)),
+        "nav_timeout": timeout,
         "cookies": state.get("cookies") or [],
         "storage": state.get("storage") or None,
     }
     payload = json.dumps(job, ensure_ascii=False)
+    py = _system_python()
     try:
         proc = subprocess.run(
-            [_system_python(), str(WORKER), payload],
+            [py, str(WORKER), payload],
             capture_output=True,
             text=True,
-            timeout=max(20, int(timeout or DEFAULT_TIMEOUT) + 20),
+            timeout=timeout + 30,
             cwd=str(WORKER.parent.parent),
         )
     except subprocess.TimeoutExpired as exc:
-        return {"ok": False, "error": f"browser timed out after {timeout}s", "partial": str(exc)[:200]}
+        # One graceful fallback: simple HTTP fetch snapshot so agent is not blind.
+        fallback = {}
+        try:
+            import urllib.request
+            nav = next((s.get("url") for s in steps if isinstance(s, dict) and s.get("action") == "navigate" and str(s.get("url","")).startswith(("http://","https://"))), None)
+            if nav:
+                req = urllib.request.Request(nav, headers={"User-Agent": "Mozilla/5.0 DarkGPT/1.0"})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    body = r.read(250000).decode("utf-8", errors="replace")
+                fallback = {"fallback": "http_fetch", "url": nav, "status": getattr(r, "status", 200), "body_preview": body[:12000]}
+        except Exception:
+            fallback = {}
+        return {
+            "ok": False,
+            "error": f"browser timed out after {timeout}s",
+            "engine": str(engine or "auto"),
+            "hint": "Browser timed out. Pivot: use fetch_web_content/curl, try engine='selenium', increase timeout, or use browser action crawl/rank on a simpler page. A lightweight HTTP fallback may be included below.",
+            **fallback,
+            "partial": str(exc)[:200],
+        }
     if proc.returncode != 0:
         return {
             "ok": False,

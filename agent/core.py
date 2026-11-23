@@ -44,6 +44,7 @@ from agent import (
     context as context_util,
     evidence as evidence_util,
     knowledge_graph as kg_util,
+    planner as planner_util,
     lsp,
     memory as memory_util,
     reporting as reporting_util,
@@ -54,9 +55,9 @@ from agent import (
 )
 
 MAX_TOOL_OUTPUT = 12000
-MAX_STEPS = 14
+DEFAULT_MAX_STEPS = int(appconfig.get("max_steps", 28) or 28)
 MAX_REPEAT_CALLS = 3
-MAX_TOOLS_PER_TURN = 14
+DEFAULT_TOOLS_PER_TURN = int(appconfig.get("tools_per_turn", 40) or 40)
 MAX_VERIFY_ROUNDS = 2
 MAX_REVIEW_ROUNDS = 1
 MAX_SUBAGENTS_PER_TURN = 3
@@ -318,16 +319,17 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "search_codebase", "description": "Cline-style batch codebase search. Run several grep extended-regex queries at once and return per-query matches with file:line. Prefer this over many separate grep calls.", "parameters": {"type": "object", "properties": {"queries": {"description": "A regex string or array of regex strings to search for."}}, "required": ["queries"]}}},
             {"type": "function", "function": {"name": "run_commands", "description": "Cline-style batch shell runner. Execute several independent bash commands in one call, each with its own exit code, output and duration. Use for parallel investigation; use shell for a single streaming command.", "parameters": {"type": "object", "properties": {"commands": {"description": "A command string, array of command strings, or objects {command,args}."}}, "required": ["commands"]}}},
             {"type": "function", "function": {"name": "fetch_web_content", "description": "Cline-style web fetch. Download one or more URLs and return cleaned readable text. Each request carries a prompt; the returned text plus that prompt is what you analyse, so state what you need extracted.", "parameters": {"type": "object", "properties": {"requests": {"description": "Object {url,prompt} or array of such objects. http:// and https:// only."}}, "required": ["requests"]}}},
-            {"type": "function", "function": {"name": "browser", "description": "Real browser automation for web analysis (Playwright with automatic Selenium fallback). No manual scripting: pass a list of high-level actions and get structured results back. Actions: navigate {url}, fill {selector,value}, click {selector|text|xpath}, extract {selector,mode=text|html|attr|links|title,attr,all,limit}, screenshot {path}, scroll {direction|pixels}, wait {selector|ms}, back, cookies, js {script}. Use `session` to keep cookies/logins across calls. Use this when a page is JS-heavy, blocks plain HTTP fetches, needs clicking/scrolling/forms, or when fetch_web_content failed.", "parameters": {"type": "object", "properties": {"actions": {"description": "A single action object or an array of action objects, executed in order in one browser session."}, "session": {"type": "string", "description": "Session name for persisted cookies/state (default 'default')."}, "engine": {"type": "string", "enum": ["auto", "playwright", "selenium"], "description": "auto tries Playwright then Selenium."}, "timeout": {"type": "integer", "description": "Overall timeout in seconds (default 90)."}}, "required": ["actions"]}}},
+            {"type": "function", "function": {"name": "browser", "description": "Real browser automation/crawling (Playwright with automatic Selenium fallback). No manual scripting: pass high-level actions; get structured results. Actions: navigate {url}, fill {selector,value}, click {selector|text|xpath}, extract {selector,mode=text|html|attr|links|title,attr,all,limit}, crawl/rank/search {query,limit,include_text} (extracts & ranks page links for a goal), screenshot {path}, scroll {direction|pixels}, wait {selector|ms}, back, cookies, js {script}. Accepts shorthand action shapes too. Use session for persisted cookies/logins. Use for JS-heavy sites, forms, clicking, crawling, or when fetch_web_content failed. If browser times out, pivot to fetch_web_content/curl and report what was learned.", "parameters": {"type": "object", "properties": {"actions": {"description": "A single action object or an array of action objects, executed in order in one browser session."}, "session": {"type": "string", "description": "Session name for persisted cookies/state (default 'default')."}, "engine": {"type": "string", "enum": ["auto", "playwright", "selenium"], "description": "auto tries Playwright then Selenium; use selenium if playwright is flaky."}, "timeout": {"type": "integer", "description": "Overall timeout in seconds (default 120, clamped 45-180)."}}, "required": ["actions"]}}},
             {"type": "function", "function": {"name": "apply_patch", "description": "Cline-style patch tool. Apply a *** Begin Patch / *** End Patch block supporting *** Update File:, *** Add File:, *** Delete File:, *** Move to: and @@ hunks with context/-/+ lines. Validates every file before writing, then returns per-file diffs. Best choice for multi-file edits.", "parameters": {"type": "object", "properties": {"input": {"type": "string", "description": "The full patch text, including *** Begin Patch and *** End Patch."}}, "required": ["input"]}}},
             {"type": "function", "function": {"name": "editor", "description": "Cline-style single-file editor. Replace old_text with new_text (first occurrence), or insert new_text at insert_line (1-based, inserted before that line; append when beyond EOF). Returns a unified diff.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "new_text": {"type": "string"}, "old_text": {"type": "string"}, "insert_line": {"type": "integer"}}, "required": ["path", "new_text"]}}},
             {"type": "function", "function": {"name": "skills", "description": "Cline-style skill invocation. Load the full instructions of a configured DarkGPT skill by name and follow them for the current task. Use it when a skill matches the work; args may pass a short focus.", "parameters": {"type": "object", "properties": {"skill": {"type": "string", "description": "Skill name (exact, or case-insensitive match)."}, "args": {"type": "string", "description": "Optional focus or arguments."}}, "required": ["skill"]}}},
             {"type": "function", "function": {"name": "ask_question", "description": "Cline-style clarifying question. Ask the user ONE question with 2-5 selectable options when the requirement is genuinely ambiguous. The user's answer is returned to you. Do not use it for questions you can answer by inspecting the workspace.", "parameters": {"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}, "description": "2-5 short answer choices."}}, "required": ["question", "options"]}}},
             {"type": "function", "function": {"name": "submit_and_exit", "description": "Cline-style completion signal. Call this ONLY when the task is finished and verified. Pass the final summary and whether you verified it; the turn ends immediately with that summary.", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}, "verified": {"type": "boolean"}}, "required": ["summary", "verified"]}}},
             {"type": "function", "function": {"name": "spawn_agent", "description": "Alias of delegate: spawn one isolated read-only subagent (explore/review/test) for a focused parallel task. Returns a concise report.", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
-            {"type": "function", "function": {"name": "knowledge_graph", "description": "Persist and query a per-target knowledge graph (hosts→services→endpoints→findings). Use it to record recon so work resumes across turns. Actions: summary, list_targets, add_host, add_service, add_endpoint, add_finding, link, query, merge.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "list_targets", "add_host", "add_service", "add_endpoint", "add_finding", "link", "query", "merge"]}, "target": {"type": "string"}, "host": {"type": "string"}, "port": {"type": "integer"}, "proto": {"type": "string"}, "url": {"type": "string"}, "title": {"type": "string"}, "severity": {"type": "string"}, "details": {"type": "string"}, "evidence_ref": {"type": "string"}, "src_kind": {"type": "string"}, "src_id": {"type": "string"}, "dst_kind": {"type": "string"}, "dst_id": {"type": "string"}, "rel": {"type": "string"}, "kind": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}, "attrs": {"type": "object"}, "source": {"type": "string"}, "graph": {"type": "object"}}, "required": ["action"]}}},
-            {"type": "function", "function": {"name": "evidence_log", "description": "Append a manual observation to the per-target append-only evidence ledger (JSONL) with SHA-256. Tool results are auto-captured when a target is active.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "tool": {"type": "string"}, "args": {}, "result": {"type": "string"}, "ok": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["tool", "result"]}}},
-            {"type": "function", "function": {"name": "report_generate", "description": "Generate a markdown or HTML pentest report from the target knowledge graph and evidence ledger.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "html"]}, "out": {"type": "string"}}, "required": []}}},
+            {"type": "function", "function": {"name": "knowledge_graph", "description": "Persist and query a per-target knowledge graph (hosts→services→endpoints→findings/auth/creds/params). Use it to record recon so work resumes across turns. Findings: status attempted|proved|false_positive; proved requires evidence_ref present in evidence ledger. Actions: summary, list_targets, add_host, add_service, add_endpoint, add_finding, link, query, merge.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "list_targets", "add_host", "add_service", "add_endpoint", "add_finding", "add_credential", "add_auth_state", "add_param", "add_fingerprint", "link", "query", "merge", "export"]}, "target": {"type": "string"}, "host": {"type": "string"}, "port": {"type": "integer"}, "proto": {"type": "string"}, "url": {"type": "string"}, "title": {"type": "string"}, "severity": {"type": "string"}, "status": {"type": "string", "enum": ["attempted", "proved", "false_positive"]}, "details": {"type": "string"}, "evidence_ref": {"type": "string"}, "asset": {"type": "string"}, "repro": {"type": "string"}, "impact": {"type": "string"}, "remediation": {"type": "string"}, "confidence": {"type": "number"}, "name": {"type": "string"}, "kind": {"type": "string"}, "state": {"type": "string"}, "location": {"type": "string"}, "fingerprint": {"type": "string"}, "src_kind": {"type": "string"}, "src_id": {"type": "string"}, "dst_kind": {"type": "string"}, "dst_id": {"type": "string"}, "rel": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}, "attrs": {"type": "object"}, "source": {"type": "string"}, "graph": {"type": "object"}, "format": {"type": "string"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "evidence_log", "description": "Append a manual observation to the per-target append-only evidence ledger (JSONL) with SHA-256 and stable evidence id. Tool results are auto-captured when a target is active.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "tool": {"type": "string"}, "args": {}, "result": {"type": "string"}, "ok": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["tool", "result"]}}},
+            {"type": "function", "function": {"name": "report_generate", "description": "Generate a pentest report from the target knowledge graph and evidence ledger. Formats: markdown, html, json, csv. JSON includes execution trace; CSV exports findings.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "html", "json", "csv"]}, "out": {"type": "string"}}, "required": []}}},
+            {"type": "function", "function": {"name": "planner_update", "description": "Update per-target adaptive planner state. Use after probes/observations to record observed signal, hypothesis delta, and next action. Also manage objective, hypotheses, tasks, and dead ends.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "action": {"type": "string", "enum": ["summary", "set_objective", "add_hypothesis", "add_task", "observe", "dead_end"]}, "objective": {"type": "string"}, "text": {"type": "string"}, "title": {"type": "string"}, "status": {"type": "string"}, "owner": {"type": "string"}, "notes": {"type": "string"}, "confidence": {"type": "number"}, "evidence_ref": {"type": "string"}, "tool": {"type": "string"}, "observed": {"type": "string"}, "hypothesis_delta": {"type": "string"}, "next_action": {"type": "string"}, "signature": {"type": "string"}, "reason": {"type": "string"}, "pivot": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "recon_orchestrate", "description": "Parallel recon: spawns read-only subagents for subdomains, ports/services, tech fingerprinting, endpoints, then merges findings into the target knowledge graph. Requires an active target.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "focus": {"type": "string"}, "workers": {"type": "array", "items": {"type": "string", "enum": ["subdomains", "ports", "tech", "endpoints"]}}}, "required": []}}},
         ]
 
@@ -450,6 +452,12 @@ class ToolRegistry:
                 if on_event:
                     on_event({"type": "subagent_start", "role": role, "task": task})
                 result = await self.subagents.run(role, task, focus)
+                try:
+                    _target = str(appconfig.get("active_target") or "").strip()
+                    if _target and result.ok:
+                        await asyncio.to_thread(self._merge_subagent_into_target, _target, result)
+                except Exception:
+                    pass
                 if on_event:
                     on_event({
                         "type": "subagent_end", "role": result.role, "task": result.task,
@@ -463,6 +471,8 @@ class ToolRegistry:
                 return clamp(json.dumps(await asyncio.to_thread(self._run_evidence_log, args), ensure_ascii=False))
             if name == "report_generate":
                 return clamp(json.dumps(await asyncio.to_thread(self._run_report, args), ensure_ascii=False))
+            if name == "planner_update":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_planner, args), ensure_ascii=False))
             if name == "recon_orchestrate":
                 return clamp(json.dumps(await self._run_recon_orchestrate(args, on_event=on_event), ensure_ascii=False))
             if name.startswith("mcp__"):
@@ -620,6 +630,55 @@ class ToolRegistry:
             return t
         return str(appconfig.get("active_target") or "").strip()
 
+    def _merge_subagent_into_target(self, target: str, result: Any) -> Dict[str, int]:
+        """Merge structured subagent output into KG with light dedupe."""
+        parsed = getattr(result, "parsed", None) or {}
+        role = getattr(result, "role", "")
+        imported = {"hosts": 0, "services": 0, "endpoints": 0, "findings": 0}
+        if not isinstance(parsed, dict):
+            return imported
+        def _dedupe(rows: Any, keys: List[str]) -> List[Dict[str, Any]]:
+            seen = set(); out = []
+            for r in rows or []:
+                if not isinstance(r, dict): continue
+                sig = "|".join(str(r.get(k, "")).strip().lower() for k in keys)
+                if not sig or sig in seen: continue
+                seen.add(sig); out.append(r)
+            return out
+        for h in _dedupe(parsed.get("hosts"), ["host"]):
+            host = str(h.get("host") or "").strip()
+            if host:
+                kg_util.add_host(target, host, {"notes": h.get("notes", "")}, source=f"subagent:{role}")
+                imported["hosts"] += 1
+        for s in _dedupe(parsed.get("services"), ["host", "port", "proto"]):
+            host = str(s.get("host") or "").strip()
+            port = s.get("port")
+            if host and port:
+                kg_util.add_service(target, host, port, str(s.get("proto") or "tcp"), {"name": s.get("name", ""), "notes": s.get("notes", "")}, source=f"subagent:{role}")
+                imported["services"] += 1
+        for e in _dedupe(parsed.get("endpoints"), ["url"]):
+            url = str(e.get("url") or "").strip()
+            if url:
+                kg_util.add_endpoint(target, url, {"notes": e.get("notes", ""), "method": e.get("method", ""), "auth": e.get("auth", "")}, source=f"subagent:{role}")
+                imported["endpoints"] += 1
+        findings_src = parsed.get("findings") or parsed.get("validations") or []
+        for f in _dedupe(findings_src, ["title", "asset", "severity"]):
+            title = str(f.get("title") or "").strip()
+            if not title: continue
+            attrs = {
+                "status": f.get("status", "attempted"),
+                "asset": f.get("asset", ""),
+                "repro": f.get("repro") or f.get("reproduction") or f.get("minimal_test") or "",
+                "impact": f.get("impact", ""),
+                "remediation": f.get("remediation", ""),
+                "confidence": f.get("confidence"),
+            }
+            kg_util.add_finding(target, title, str(f.get("severity") or "info"), str(f.get("details") or f.get("why") or ""), str(f.get("evidence_ref") or ""), attrs, source=f"subagent:{role}")
+            imported["findings"] += 1
+        if any(imported.values()):
+            evidence_util.record(target, tool=f"subagent_merge:{role}", args={"task": str(getattr(result,'task',''))[:200]}, result=json.dumps(imported), ok=True, source="agent", tags=["subagent","merge",role])
+        return imported
+
     def _run_kg(self, args: Dict[str, Any]) -> Any:
         a = args or {}
         action = str(a.get("action") or "").strip()
@@ -637,7 +696,19 @@ class ToolRegistry:
         if action == "add_endpoint":
             return kg_util.add_endpoint(target, str(a.get("url") or ""), a.get("attrs") or {}, source=str(a.get("source") or "agent"))
         if action == "add_finding":
-            return kg_util.add_finding(target, str(a.get("title") or "Finding"), str(a.get("severity") or "info"), str(a.get("details") or ""), str(a.get("evidence_ref") or ""), a.get("attrs") or {}, source=str(a.get("source") or "agent"))
+            attrs = dict(a.get("attrs") or {})
+            for k in ("status", "asset", "repro", "reproduction", "impact", "remediation", "confidence"):
+                if a.get(k) is not None and a.get(k) != "":
+                    attrs.setdefault(k, a.get(k))
+            return kg_util.add_finding(target, str(a.get("title") or "Finding"), str(a.get("severity") or "info"), str(a.get("details") or ""), str(a.get("evidence_ref") or ""), attrs, source=str(a.get("source") or "agent"))
+        if action == "add_credential":
+            return kg_util.add_credential(target, str(a.get("name") or a.get("title") or "cred"), str(a.get("kind") or "token"), a.get("attrs") or {}, source=str(a.get("source") or "agent"))
+        if action == "add_auth_state":
+            return kg_util.add_auth_state(target, str(a.get("host") or a.get("asset") or ""), str(a.get("state") or a.get("status") or "unknown"), a.get("attrs") or {}, source=str(a.get("source") or "agent"))
+        if action == "add_param":
+            return kg_util.add_param(target, str(a.get("url") or a.get("endpoint") or ""), str(a.get("name") or ""), str(a.get("location") or "query"), a.get("attrs") or {}, source=str(a.get("source") or "agent"))
+        if action == "add_fingerprint":
+            return kg_util.add_fingerprint(target, str(a.get("asset") or a.get("url") or a.get("host") or ""), str(a.get("fingerprint") or a.get("details") or ""), a.get("attrs") or {}, source=str(a.get("source") or "agent"))
         if action == "link":
             ok = kg_util.link(target, str(a.get("src_kind") or ""), str(a.get("src_id") or ""), str(a.get("dst_kind") or ""), str(a.get("dst_id") or ""), str(a.get("rel") or "related"))
             return {"ok": ok}
@@ -645,6 +716,8 @@ class ToolRegistry:
             return {"nodes": kg_util.query(target, str(a.get("kind") or ""), str(a.get("text") or ""), int(a.get("limit", 50)))}
         if action == "merge":
             return kg_util.merge(target, a.get("graph") or {}, source=str(a.get("source") or "merge"))
+        if action == "export":
+            return kg_util.export_graph(target, str(a.get("format") or "json"))
         return {"error": f"unknown knowledge_graph action: {action}"}
 
     def _run_evidence_log(self, args: Dict[str, Any]) -> Any:
@@ -661,6 +734,31 @@ class ToolRegistry:
             return {"error": "no target set; pass target or run /target <name>"}
         return reporting_util.write_report(target, fmt=str(a.get("format") or "markdown"), out=str(a.get("out") or ""))
 
+    def _run_planner(self, args: Dict[str, Any]) -> Any:
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        action = str(a.get("action") or "summary").strip()
+        if action == "summary":
+            return planner_util.summary(target)
+        if action == "set_objective":
+            planner_util.set_objective(target, str(a.get("objective") or a.get("text") or ""))
+            return planner_util.summary(target)
+        if action == "add_hypothesis":
+            planner_util.add_hypothesis(target, str(a.get("text") or a.get("title") or ""), str(a.get("status") or "open"), a.get("confidence"), str(a.get("evidence_ref") or ""))
+            return planner_util.summary(target)
+        if action == "add_task":
+            planner_util.add_task(target, str(a.get("title") or a.get("text") or ""), str(a.get("status") or "todo"), str(a.get("owner") or ""), str(a.get("notes") or ""))
+            return planner_util.summary(target)
+        if action == "observe":
+            planner_util.record_observation(target, tool=str(a.get("tool") or "manual"), observed=str(a.get("observed") or a.get("text") or ""), hypothesis_delta=str(a.get("hypothesis_delta") or ""), next_action=str(a.get("next_action") or ""))
+            return planner_util.summary(target)
+        if action == "dead_end":
+            planner_util.record_dead_end(target, str(a.get("signature") or a.get("text") or ""), str(a.get("reason") or ""), str(a.get("pivot") or a.get("next_action") or ""))
+            return planner_util.summary(target)
+        return {"error": f"unknown planner action: {action}"}
+
     async def _run_recon_orchestrate(self, args: Dict[str, Any], on_event=None) -> Any:
         a = args or {}
         target = self._active_target(a)
@@ -671,44 +769,47 @@ class ToolRegistry:
         workers = [str(w) for w in workers if str(w) in {"subdomains", "ports", "tech", "endpoints"}] or ["subdomains", "ports", "tech", "endpoints"]
         pool = self.subagents or subagents.SubagentPool(self.model if hasattr(self, "model") else str(appconfig.get("model") or "nvidia/nemotron-3.5-lightning-30b-a3b"), os.getcwd(), max_concurrent=2, max_total=max(3, len(workers)))
         prompts = {
-            "subdomains": f"Enumerate subdomains and related hosts for target '{target}'. Use read-only tools (shell/curl/dig/host where available, web_search/fetch patterns via shell). Return JSON lines: HOST <host> <notes>.",
-            "ports": f"Identify open ports/services for '{target}' from passive sources and safe probes available in shell (curl -I, nc -z if present, nmap only if present). Return JSON lines: SERVICE <host> <port> <proto> <name>.",
-            "tech": f"Fingerprint web technologies/endpoints for '{target}' (headers, HTML clues, common paths). Return JSON lines: ENDPOINT <url> <notes> and FINDING info <title> :: <details> for notable observations.",
-            "endpoints": f"Discover interesting endpoints/paths for '{target}' (robots, sitemap, js links, common API paths). Return JSON lines: ENDPOINT <url> <notes>.",
+            "subdomains": f"Enumerate subdomains and related hosts for target '{target}'. Use read-only tools. Return JSON schema for recon role (hosts/services/endpoints/findings/next_step).",
+            "ports": f"Identify open ports/services for '{target}' from safe probes available in shell. Return JSON schema for recon role.",
+            "tech": f"Fingerprint web technologies/endpoints/auth surfaces for '{target}' (headers, HTML clues, common paths). Return JSON schema for recon role.",
+            "endpoints": f"Discover interesting endpoints/paths for '{target}' (robots, sitemap, js links, common API paths). Return JSON schema for recon role.",
         }
-        tasks = [("explore", prompts[w] + (f"\nFocus: {focus}" if focus else ""), f"Target: {target}") for w in workers]
+        tasks = [("recon", prompts[w] + (f"\nFocus: {focus}" if focus else ""), f"Target: {target}") for w in workers]
         results = await pool.run_many(tasks)
         imported = {"hosts": 0, "services": 0, "endpoints": 0, "findings": 0}
         for r in results:
-            text = r.text or ""
-            for line in text.splitlines():
-                line = line.strip()
-                if line.startswith("HOST "):
-                    parts = line.split(None, 2)
-                    if len(parts) >= 2:
-                        kg_util.add_host(target, parts[1], {"notes": parts[2] if len(parts) > 2 else ""}, source="recon_orchestrate")
-                        imported["hosts"] += 1
-                elif line.startswith("SERVICE "):
-                    parts = line.split(None, 4)
-                    if len(parts) >= 4:
-                        try:
-                            kg_util.add_service(target, parts[1], int(parts[2]), parts[3], {"name": parts[4] if len(parts) > 4 else ""}, source="recon_orchestrate")
-                            imported["services"] += 1
-                        except Exception:
-                            pass
-                elif line.startswith("ENDPOINT "):
-                    parts = line.split(None, 2)
-                    if len(parts) >= 2:
-                        kg_util.add_endpoint(target, parts[1], {"notes": parts[2] if len(parts) > 2 else ""}, source="recon_orchestrate")
-                        imported["endpoints"] += 1
-                elif line.startswith("FINDING "):
-                    # FINDING <severity> <title> :: <details>
-                    rest = line[len("FINDING "):]
-                    sev, _, tail = rest.partition(" ")
-                    title, _, details = tail.partition("::")
-                    kg_util.add_finding(target, title.strip() or "Recon finding", sev.strip().lower() or "info", details.strip(), source="recon_orchestrate")
-                    imported["findings"] += 1
-            # also record raw evidence
+            merged = self._merge_subagent_into_target(target, r)
+            for k in imported:
+                imported[k] += int(merged.get(k, 0))
+            # fallback line parsing if nothing structured merged
+            if not any(merged.values()):
+                text = r.text or ""
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("HOST "):
+                        parts = line.split(None, 2)
+                        if len(parts) >= 2:
+                            kg_util.add_host(target, parts[1], {"notes": parts[2] if len(parts) > 2 else ""}, source="recon_orchestrate")
+                            imported["hosts"] += 1
+                    elif line.startswith("SERVICE "):
+                        parts = line.split(None, 4)
+                        if len(parts) >= 4:
+                            try:
+                                kg_util.add_service(target, parts[1], int(parts[2]), parts[3], {"name": parts[4] if len(parts) > 4 else ""}, source="recon_orchestrate")
+                                imported["services"] += 1
+                            except Exception:
+                                pass
+                    elif line.startswith("ENDPOINT "):
+                        parts = line.split(None, 2)
+                        if len(parts) >= 2:
+                            kg_util.add_endpoint(target, parts[1], {"notes": parts[2] if len(parts) > 2 else ""}, source="recon_orchestrate")
+                            imported["endpoints"] += 1
+                    elif line.startswith("FINDING "):
+                        rest = line[len("FINDING "):]
+                        sev, _, tail = rest.partition(" ")
+                        title, _, details = tail.partition("::")
+                        kg_util.add_finding(target, title.strip() or "Recon finding", sev.strip().lower() or "info", details.strip(), source="recon_orchestrate")
+                        imported["findings"] += 1
             evidence_util.record(target, tool=f"recon_orchestrate:{r.role}", args={"task": r.task[:200]}, result=r.text or r.error, ok=r.ok, source="recon_orchestrate", tags=["recon", r.role])
         return {"target": target, "workers": workers, "results": [r.to_dict() for r in results], "imported": imported, "graph": kg_util.summary(target)}
 
@@ -960,21 +1061,32 @@ SELF-LEARNING AND PATTERNS
   shape Y", "host Z drops HEAD but answers GET"), not the single incident.
 - Prefer a smaller, verified step over a grand plan that keeps failing. When a
   route fails twice for the same reason, stop retrying and switch route.
+- ANTI-TUNNELING (hacker mindset): never fixate on one tool, one endpoint, one
+  payload, or one error. If a route fails, pivot: change tool (browser/fetch/curl/
+  MCP/script), change angle (headers, method, encoding, auth, path, params,
+  timing, protocol), change source (search, cached/public mirrors, alternate
+  subdomains/APIs), or decompose the problem. Think like a pentester: enumerate,
+  hypothesize, probe, observe, adapt, chain. Partial progress is still progress —
+  record it in KG/evidence/planner and move to the next highest-value hypothesis.
 
 CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
 - Dynamic state: maintain a live model of the target. Use `knowledge_graph` to record
   hosts, services, endpoints, HTTP methods, auth states, parameters, and findings as
-  you discover them. The active target's graph/evidence summary is injected into
+  you discover them. The active target's graph/evidence/planner summary is injected into
   context — keep it current. Evidence is auto-captured; add manual `evidence_log`
   entries for important observations.
-- Adaptive hypothesis loop: every probe is a hypothesis. On failure/block (403, 401,
-  429, WAF, timeout, unexpected shape), read the response, update the graph/memory,
-  mutate the payload or change method/header/path/encoding/auth, and pivot. Do not
-  stop at a block; explain what the block implies.
+- Adaptive hypothesis loop (enforced workflow): every probe is a hypothesis. After
+  meaningful observations, call `planner_update` with action=observe and record
+  `observed`, `hypothesis_delta`, and `next_action`. On failure/block (403, 401,
+  429, WAF, timeout, unexpected shape), read the response, update graph/memory/planner,
+  mutate payload or change method/header/path/encoding/auth, and pivot. Record dead
+  ends via `planner_update` action=dead_end with signature/reason/pivot. Do not stop
+  at a block; explain what the block implies.
 - Multi-agent orchestration: use `delegate`/`spawn_agent` roles deliberately —
   `recon` for discovery, `vuln_analysis` for hypothesis/correlation, `exploit_validation`
   for proof-first review, `reporting` for defensible writeups. Use `recon_orchestrate`
-  for parallel discovery and merge results into the graph.
+  for parallel discovery and merge results into the graph. Subagent outputs should be
+  structured and merged back into KG/planner with dedupe.
 - Constrained tools: prefer structured tool wrappers (browser, fetch_web_content,
   web_search, MCP tools, shell with precise commands) over ad-hoc guessing. Parse
   stdout/stderr/status/body and feed it back into the next decision.
@@ -1179,7 +1291,16 @@ async def _execute_tool(
                 }
         except Exception:
             pass
-    # Auto-capture evidence when an active target is configured.
+    # Make missing-tool errors actionable so the agent pivots instead of stalling.
+    if not ok and isinstance(result, str):
+        low = result.lower()
+        missing_bin = ("no such file or directory" in low or "command not found" in low or "executable file not found" in low)
+        known = any(t in low for t in ("urlcrazy", "nmap", "ffuf", "dirb", "wfuzz", "hydra", "sqlmap", "nikto", "whatweb", "subfinder", "amass", "httpx", "gobuster", "nuclei", "masscan", "dirsearch", "katana", "dnsx"))
+        if missing_bin and (known or name.startswith("mcp__") or name == "shell"):
+            hint = "Tool binary missing on this system. Do not retry the same tool. Pivot to alternative CLI/MCP/browser/curl/python. If install is truly needed, ask the user for permission, install it (apt/pip/go/cargo as appropriate), then retry once."
+            result = result.rstrip() + f"\n\n[agent-hint] {hint}"
+            yield {"type": "notice", "message": hint}
+    # Auto-capture evidence and lightweight planner observation when target is active.
     try:
         _target = str(appconfig.get("active_target") or "").strip()
         if _target and name not in ("evidence_log",):
@@ -1187,6 +1308,48 @@ async def _execute_tool(
                 evidence_util.record, _target,
                 tool=name, args=args, result=result, ok=ok, source="agent", tags=["auto"],
             )
+        if _target and name not in ("planner_update",):
+            obs = str(result or "")
+            obs = obs.replace("\n", " ")[:280]
+            status = "ok" if ok else "error"
+            await asyncio.to_thread(
+                planner_util.record_observation, _target,
+                tool=name, observed=f"{status}: {obs}", hypothesis_delta="", next_action="",
+            )
+        # Browser evidence linking: persist screenshot artifacts into target evidence dir.
+        if _target and name == "browser" and ok:
+            try:
+                import shutil
+                from pathlib import Path as _P
+                payload = json.loads(result) if isinstance(result, str) else result
+                shots = []
+                if isinstance(payload, dict):
+                    for k in ("screenshot", "screenshots", "artifacts"):
+                        v = payload.get(k)
+                        if isinstance(v, str): shots.append(v)
+                        elif isinstance(v, list): shots.extend([x for x in v if isinstance(x, str)])
+                    # common nested shape
+                    for r in (payload.get("results") or []):
+                        if isinstance(r, dict):
+                            for k in ("screenshot", "path", "artifact"):
+                                v = r.get(k)
+                                if isinstance(v, str) and (".png" in v.lower() or ".jpg" in v.lower() or ".webp" in v.lower()):
+                                    shots.append(v)
+                evdir = kg_util.target_dir(_target) / "evidence_artifacts"
+                evdir.mkdir(parents=True, exist_ok=True)
+                for sp in shots[:10]:
+                    p = _P(sp).expanduser()
+                    if not p.exists() or not p.is_file(): continue
+                    dest = evdir / p.name
+                    if dest.resolve() != p.resolve():
+                        shutil.copy2(p, dest)
+                    await asyncio.to_thread(
+                        evidence_util.record, _target,
+                        tool="browser_artifact", args={"source_path": str(p)}, result=f"artifact={dest}", ok=True,
+                        source="agent", tags=["browser", "screenshot", "artifact"],
+                    )
+            except Exception:
+                pass
     except Exception:
         pass
     yield {
@@ -1488,7 +1651,20 @@ async def run_agent(
 
     submitted: Optional[Dict[str, Any]] = None
 
-    for _step in range(MAX_STEPS):
+    max_steps = int(appconfig.get("max_steps", DEFAULT_MAX_STEPS) or DEFAULT_MAX_STEPS)
+    tools_per_turn = int(appconfig.get("tools_per_turn", DEFAULT_TOOLS_PER_TURN) or DEFAULT_TOOLS_PER_TURN)
+    tools_per_turn = max(10, min(tools_per_turn, 200))
+    for _step in range(max_steps):
+        if _step == max_steps - 4:
+            messages.append({
+                "role": "user",
+                "content": "SYSTEM NUDGE: You are near the step limit. Do not stall or repeat failed routes. Pivot to the best alternative, record findings/evidence, and return the most useful verified answer now. If blocked, summarize what was tried, what worked/failed, and the next best route.",
+            })
+        if tools_used >= tools_per_turn - 3 and tools_used < tools_per_turn:
+            messages.append({
+                "role": "user",
+                "content": f"SYSTEM NUDGE: You have used {tools_used}/{tools_per_turn} tool calls this turn. Prioritize high-value actions, avoid repeats, and be ready to summarize verified findings if budget runs out.",
+            })
         payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": True}
         if native_supported and active_tools:
             payload["tools"] = active_tools
@@ -1710,6 +1886,7 @@ async def run_agent(
 
         if native_supported and tool_calls:
             messages.append({"role": "assistant", "content": "".join(content), "tool_calls": tool_calls})
+            budget_hit = False
             for call in tool_calls:
                 fn = call.get("function") or {}
                 name = fn.get("name") or "unknown"
@@ -1719,8 +1896,19 @@ async def run_agent(
                 except Exception:
                     args = {"_raw": raw}
                 problem = validate_tool_args(name, args, schemas.get(name))
-                if problem is None and tools_used >= MAX_TOOLS_PER_TURN:
-                    problem = f"Tool budget reached ({MAX_TOOLS_PER_TURN} calls this turn). Answer with what you have."
+                if problem is None and tools_used >= tools_per_turn:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.get("id") or f"call_{name}",
+                        "content": json.dumps({"skipped": True, "reason": "tool budget reached", "hint": "Summarize verified findings, evidence refs, dead ends, and next best pivot."}, ensure_ascii=False),
+                    })
+                    messages.append({
+                        "role": "user",
+                        "content": f"Tool budget reached ({tools_per_turn} calls). Do not request more tools. Return the best verified answer now, including what worked, what failed, evidence refs, and next pivot.",
+                    })
+                    yield {"type": "notice", "message": f"Tool budget reached ({tools_per_turn}); requesting final summary."}
+                    budget_hit = True
+                    break
                 if problem is not None:
                     _learn("failed-approach", f"{name} rejected: {problem}", {"tool": name})
                     yield {"type": "error", "fatal": True, "message": problem}
@@ -1784,6 +1972,8 @@ async def run_agent(
                     yield {"type": "delta", "text": summary}
                 yield {"type": "done", "submitted": True, "verified": bool(submitted.get("verified"))}
                 return
+            if budget_hit:
+                continue
             if needs_verify or (enable_review and review_rounds == 0):
                 async for gate_event in _gates():
                     yield gate_event
@@ -1799,9 +1989,15 @@ async def run_agent(
                 messages.append({"role": "assistant", "content": full_content})
                 name = tc["name"]
                 args = tc.get("arguments") or {}
+                budget_hit = False
                 problem = validate_tool_args(name, args, schemas.get(name))
-                if problem is None and tools_used >= MAX_TOOLS_PER_TURN:
-                    problem = f"Tool budget reached ({MAX_TOOLS_PER_TURN} calls this turn). Answer with what you have."
+                if problem is None and tools_used >= tools_per_turn:
+                    messages.append({
+                        "role": "user",
+                        "content": f"Tool budget reached ({tools_per_turn} calls). Do not request more tools. Return the best verified answer now, including what worked, what failed, evidence refs, and next pivot.",
+                    })
+                    yield {"type": "notice", "message": f"Tool budget reached ({tools_per_turn}); requesting final summary."}
+                    continue
                 if problem is not None:
                     _learn("failed-approach", f"{name} rejected: {problem}", {"tool": name})
                     yield {"type": "error", "fatal": True, "message": problem}
@@ -1879,4 +2075,4 @@ async def run_agent(
         yield {"type": "done"}
         return
 
-    yield {"type": "error", "message": f"Agent stopped after {MAX_STEPS} steps."}
+    yield {"type": "error", "message": f"Agent stopped after {max_steps} steps. Increase with config max_steps if needed."}

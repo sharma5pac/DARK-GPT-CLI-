@@ -44,6 +44,22 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", "replace")).hexdigest()
 
 
+def _entry_id(ts: float, tool: str, result_sha256: str) -> str:
+    raw = f"{ts}|{tool}|{result_sha256}"
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _normalize_entry(e: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(e, dict):
+        return {}
+    if not e.get("id"):
+        try:
+            e["id"] = _entry_id(float(e.get("ts") or 0), str(e.get("tool") or ""), str(e.get("result_sha256") or ""))
+        except Exception:
+            e["id"] = _entry_id(0.0, str(e.get("tool") or ""), str(e.get("result_sha256") or ""))
+    return e
+
+
 def record(
     target: str,
     *,
@@ -57,8 +73,11 @@ def record(
     path = evidence_path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
     result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    ts = time.time()
+    digest = sha256_text(result_text)
     entry = {
-        "ts": time.time(),
+        "id": _entry_id(ts, tool, digest),
+        "ts": ts,
         "target": target,
         "tool": tool,
         "ok": bool(ok),
@@ -66,12 +85,54 @@ def record(
         "tags": list(tags or []),
         "args": _redact(args),
         "result_preview": result_text[:6000],
-        "result_sha256": sha256_text(result_text),
+        "result_sha256": digest,
         "result_bytes": len(result_text.encode("utf-8", "replace")),
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return entry
+
+
+def read_entries(target: str, limit: int = 200) -> List[Dict[str, Any]]:
+    path = evidence_path(target)
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in lines[-max(0, limit):]:
+        try:
+            out.append(_normalize_entry(json.loads(line)))
+        except Exception:
+            continue
+    return out
+
+
+def has_ref(target: str, ref: str) -> bool:
+    """Check if an evidence ref exists. Accepts entry id or sha256 prefix/full hash."""
+    ref = str(ref or "").strip().lower()
+    if not ref:
+        return False
+    for e in read_entries(target, limit=100000):
+        eid = str(e.get("id") or "").lower()
+        sha = str(e.get("result_sha256") or "").lower()
+        if ref == eid or ref == sha or sha.startswith(ref) or eid.startswith(ref):
+            return True
+    return False
+
+
+def get_by_ref(target: str, ref: str) -> Optional[Dict[str, Any]]:
+    ref = str(ref or "").strip().lower()
+    if not ref:
+        return None
+    for e in read_entries(target, limit=100000):
+        eid = str(e.get("id") or "").lower()
+        sha = str(e.get("result_sha256") or "").lower()
+        if ref == eid or ref == sha or sha.startswith(ref) or eid.startswith(ref):
+            return e
+    return None
 
 
 def read_entries(target: str, limit: int = 200) -> List[Dict[str, Any]]:

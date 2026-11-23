@@ -78,9 +78,9 @@ COMMANDS: List[tuple[str, str]] = [
     ("/learn", "Toggle self-learning (lessons + pattern capture)"),
     ("/target", "Set/show active target for knowledge graph + evidence (/target <name>)"),
     ("/targets", "List known targets"),
-    ("/kg", "Show knowledge graph summary (/kg hosts|services|endpoints|findings)"),
+    ("/kg", "Knowledge graph: /kg [hosts|services|endpoints|findings|query <t>|chain <t>|export json|dot]"),
     ("/evidence", "Show evidence ledger summary for active target"),
-    ("/report", "Generate report from graph+evidence (/report md|html [out])"),
+    ("/report", "Generate report: /report md|html|json|csv [out]"),
     ("/recon", "Run parallel recon orchestration for active target (/recon [focus])"),
     ("/route", "Set or clear the cheap routing model (/route model/id)"),
     ("/power", "Show all coding-power settings"),
@@ -100,6 +100,8 @@ PHASE_LABELS = {
 
 
 class PhaseTimeline(Static):
+    ALLOW_SELECT = True
+
     """Live phase timeline driven by perf_counter events from the agent."""
 
     def __init__(self) -> None:
@@ -165,6 +167,8 @@ class PhaseTimeline(Static):
 
 
 class ThoughtBlock(Static):
+    ALLOW_SELECT = True
+
     can_focus = True
     BINDINGS = [Binding("enter", "toggle", "Toggle thought", show=False)]
 
@@ -194,7 +198,7 @@ class ThoughtBlock(Static):
         self.expanded = not self.expanded
         self.render_block()
 
-    def on_click(self) -> None:
+    def on_click(self, event=None) -> None:
         self.action_toggle()
 
 
@@ -232,6 +236,8 @@ def result_preview(result: Any, lines: int = 4, limit: int = 360) -> str:
 
 
 class ToolCard(Static):
+    ALLOW_SELECT = True
+
     can_focus = True
     BINDINGS = [Binding("enter", "toggle", "Toggle output", show=False)]
 
@@ -309,7 +315,7 @@ class ToolCard(Static):
         self.expanded = not self.expanded
         self.refresh_view()
 
-    def on_click(self) -> None:
+    def on_click(self, event=None) -> None:
         self.action_toggle()
 
 
@@ -335,6 +341,8 @@ class DiffCard(Static):
 
 
 class SubagentCard(Static):
+    ALLOW_SELECT = True
+
     """Live status for one isolated subagent worker."""
 
     def __init__(self, role: str, task: str) -> None:
@@ -358,6 +366,8 @@ class SubagentCard(Static):
 
 
 class BackgroundIndicator(Static):
+    ALLOW_SELECT = True
+
     """One-line summary for tool calls that run without chat cards."""
 
     def __init__(self) -> None:
@@ -450,6 +460,8 @@ class ActivitySpinner(Static):
 
 
 class SectionLabel(Static):
+    ALLOW_SELECT = True
+
     """Divider that separates tool findings from the model response."""
 
     def __init__(self, title: str, style: str) -> None:
@@ -462,6 +474,8 @@ class SectionLabel(Static):
 
 
 class FindingCard(Static):
+    ALLOW_SELECT = True
+
     """Readable preview of a background MCP/search result.
 
     Raw output stays out of the chat by default; the model still receives the
@@ -515,11 +529,13 @@ class FindingCard(Static):
         self.expanded = not self.expanded
         self.refresh_view()
 
-    def on_click(self) -> None:
+    def on_click(self, event=None) -> None:
         self.action_toggle()
 
 
 class ErrorCard(Static):
+    ALLOW_SELECT = True
+
     """Structured provider error, rendered instead of a raw traceback."""
 
     def __init__(self, card: Dict[str, Any], elapsed: float = 0.0) -> None:
@@ -574,6 +590,8 @@ class ErrorCard(Static):
 
 
 class ChatMessage(Static):
+    ALLOW_SELECT = True
+
     def __init__(self, role: str, content: str = "") -> None:
         super().__init__()
         self.role = role
@@ -1530,6 +1548,12 @@ class DarkGPTApp(App):
         self.scripts_enabled: bool = True
         self.allow_react_fallback: bool = True
         self._session_id: str = ""
+        self._liveness_phase = "Working"
+        self._liveness_detail = ""
+        self._liveness_frame = 0
+        self._liveness_started = 0.0
+        self._liveness_timer = None
+        self._active_subagents = 0
 
     # ---------------------------------------------------------------- compose
     def compose(self) -> ComposeResult:
@@ -1545,6 +1569,7 @@ class DarkGPTApp(App):
         with Vertical(id="body"):
             yield VerticalScroll(id="conversation")
             yield OptionList(id="palette")
+            yield Static("", id="liveness-bar")
             with Vertical(id="prompt-wrap"):
                 with Vertical(id="prompt-box"):
                     yield PromptArea("", id="prompt-input", show_line_numbers=False)
@@ -2057,22 +2082,60 @@ class DarkGPTApp(App):
             if not target:
                 self._system_note("No active target. Use /target <name> first.")
             else:
-                arg = parts[1].strip().lower() if len((command or "").split(maxsplit=1)) > 1 else "summary"
-                if arg in ("hosts", "services", "endpoints", "findings"):
-                    nodes = kg_util.query(target, kind=arg[:-1] if arg != "endpoints" else "endpoint", limit=50)
+                raw = (command or "").split(maxsplit=2)
+                arg = raw[1].strip().lower() if len(raw) > 1 else "summary"
+                rest = raw[2].strip() if len(raw) > 2 else ""
+                if arg in ("hosts", "services", "endpoints", "findings", "credentials", "auth_states", "params", "fingerprints"):
+                    kind = {"endpoints": "endpoint", "credentials": "credential", "auth_states": "auth_state", "params": "param", "fingerprints": "fingerprint"}.get(arg, arg[:-1] if arg.endswith("s") else arg)
+                    nodes = kg_util.query(target, kind=kind, limit=50)
                     if not nodes:
                         self._system_note(f"No {arg} for {target}.")
                     else:
                         lines = [f"{arg} for {target}:"]
                         for n in nodes[:50]:
                             a = n.get("attrs") or {}
-                            label = a.get("host") or a.get("url") or a.get("title") or n.get("id")
+                            label = a.get("host") or a.get("url") or a.get("title") or a.get("name") or a.get("fingerprint") or n.get("id")
                             extra = ""
-                            if n.get("kind") == "service":
-                                extra = f" ({a.get('name') or a.get('product') or ''})"
-                            if n.get("kind") == "finding":
-                                extra = f" [{a.get('severity','info')}]"
+                            if n.get("kind") == "service": extra = f" ({a.get('name') or a.get('product') or ''})"
+                            if n.get("kind") == "finding": extra = f" [{a.get('severity','info')}/{a.get('status','attempted')}]"
+                            if n.get("kind") == "auth_state": extra = f" [{a.get('state','')}]"
                             lines.append(f"- {label}{extra}")
+                        self._system_note("\n".join(lines))
+                elif arg == "query":
+                    nodes = kg_util.query(target, text=rest, limit=30)
+                    if not nodes:
+                        self._system_note(f"No KG nodes matching '{rest}'.")
+                    else:
+                        lines = [f"KG query '{rest}':"]
+                        for n in nodes:
+                            a = n.get("attrs") or {}
+                            label = a.get("host") or a.get("url") or a.get("title") or a.get("name") or n.get("id")
+                            lines.append(f"- [{n.get('kind')}] {label}")
+                        self._system_note("\n".join(lines))
+                elif arg == "export":
+                    fmt = (rest or "json").lower().strip()
+                    try:
+                        res = kg_util.export_graph(target, fmt)
+                        self._system_note(f"KG exported ({res.get('format')}): {res.get('path')}")
+                    except Exception as e:
+                        self._system_note(f"KG export failed: {e}")
+                elif arg == "chain":
+                    nodes = kg_util.query(target, kind="finding", text=rest, limit=10)
+                    if not nodes:
+                        self._system_note(f"No findings matching '{rest}'.")
+                    else:
+                        g = kg_util._load(target)
+                        lines = [f"Finding chains for '{rest}':"]
+                        for n in nodes:
+                            a = n.get("attrs") or {}
+                            lines.append(f"- [{a.get('severity','info')}/{a.get('status','attempted')}] {a.get('title') or n.get('id')}")
+                            for e in g.get("edges") or []:
+                                if e.get("src") == n.get("key") or e.get("dst") == n.get("key"):
+                                    other = e.get("dst") if e.get("src") == n.get("key") else e.get("src")
+                                    on = (g.get("nodes") or {}).get(other) or {}
+                                    oa = on.get("attrs") or {}
+                                    olabel = oa.get("host") or oa.get("url") or oa.get("title") or oa.get("name") or on.get("id")
+                                    lines.append(f"  - {e.get('rel')} -> [{on.get('kind')}] {olabel}")
                         self._system_note("\n".join(lines))
                 else:
                     s = kg_util.summary(target)
@@ -2080,7 +2143,7 @@ class DarkGPTApp(App):
                     self._system_note(
                         f"KG {s.get('target')}\n"
                         f"hosts={c.get('host',0)} services={c.get('service',0)} endpoints={c.get('endpoint',0)} findings={c.get('finding',0)} edges={s.get('edges',0)}\n"
-                        f"graph: {s.get('path')}\nUse /kg hosts|services|endpoints|findings for details."
+                        f"graph: {s.get('path')}\nUse /kg hosts|services|endpoints|findings|query <text>|chain <text>|export json|dot"
                     )
         elif name == "/evidence":
             from agent import evidence as evidence_util
@@ -2100,11 +2163,11 @@ class DarkGPTApp(App):
                 self._system_note("No active target. Use /target <name> first.")
             else:
                 parts = (command or "").strip().split()
-                fmt = parts[1] if len(parts) > 1 and parts[1].lower() in ("md", "markdown", "html", "htm") else "markdown"
+                fmt = parts[1].lower() if len(parts) > 1 and parts[1].lower() in ("md", "markdown", "html", "htm", "json", "csv") else "markdown"
                 out = parts[2] if len(parts) > 2 else ""
                 try:
                     res = reporting_util.write_report(target, fmt=fmt, out=out)
-                    self._system_note(f"Report written: {res.get('path')} ({res.get('bytes',0)} bytes)")
+                    self._system_note(f"Report written ({res.get('format')}): {res.get('path')} ({res.get('bytes',0)} bytes)")
                 except Exception as e:
                     self._system_note(f"Report failed: {e}")
         elif name == "/recon":
@@ -2800,11 +2863,67 @@ class DarkGPTApp(App):
             return True
         return choice == "once"
 
+    # ---------------------------------------------------------------- liveness
+    _LIVENESS_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def _liveness_paint(self) -> None:
+        try:
+            bar = self.query_one("#liveness-bar", Static)
+        except Exception:
+            return
+        elapsed = max(0.0, time.perf_counter() - self._liveness_started) if self._liveness_started else 0.0
+        frame = self._LIVENESS_FRAMES[self._liveness_frame % len(self._LIVENESS_FRAMES)]
+        label = (self._liveness_detail or self._liveness_phase or "Working").strip()
+        if len(label) > 70:
+            label = label[:67] + "..."
+        extra = f" · {self._active_subagents} subagent{'s' if self._active_subagents != 1 else ''} active" if self._active_subagents else ""
+        bar.update(Text(f"{frame} {label}{extra} · {elapsed:.1f}s", style="bold #e5a93c"))
+
+    def _liveness_tick(self) -> None:
+        if not self.busy:
+            return
+        self._liveness_frame = (self._liveness_frame + 1) % len(self._LIVENESS_FRAMES)
+        self._liveness_paint()
+
+    def _liveness_start(self, phase: str = "Working", detail: str = "") -> None:
+        self._liveness_phase = phase
+        self._liveness_detail = detail
+        self._liveness_started = time.perf_counter()
+        self._liveness_frame = 0
+        try:
+            bar = self.query_one("#liveness-bar", Static)
+            bar.add_class("active")
+        except Exception:
+            pass
+        if self._liveness_timer is None:
+            try:
+                self._liveness_timer = self.set_interval(0.1, self._liveness_tick)
+            except Exception:
+                self._liveness_timer = None
+        self._liveness_paint()
+
+    def _liveness_set(self, phase: str, detail: str = "") -> None:
+        if not self.busy:
+            return
+        self._liveness_phase = phase
+        self._liveness_detail = detail
+        self._liveness_paint()
+
+    def _liveness_stop(self, ok: bool = True) -> None:
+        try:
+            bar = self.query_one("#liveness-bar", Static)
+            bar.remove_class("active")
+            bar.update("")
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ agent
     @work(exclusive=False)
     async def run_prompt(self, text: str, echo_user: bool = True) -> None:
         self.busy = True
+        self._active_subagents = 0
         self.refresh_status()
+        self._liveness_start("Connecting")
         conv = self.query_one("#conversation", VerticalScroll)
         if echo_user:
             await conv.mount(ChatMessage("user", text))
@@ -2862,16 +2981,15 @@ class DarkGPTApp(App):
                     state = event.get("state", "")
                     if state == "start":
                         timeline.start(phase, event.get("label"))
-                        spinner.set_activity(
-                            {"connecting": "Connecting", "thinking": "Thinking",
-                             "writing": "Writing response", "tool": "Running tool"}
-                            .get(phase, phase.title()),
-                            str(event.get("label") or "") if phase == "tool" else "",
-                        )
+                        _phase_label = {"connecting": "Connecting", "thinking": "Thinking", "writing": "Writing response", "tool": "Running tool"}.get(phase, phase.title())
+                        _detail = str(event.get("label") or "") if phase == "tool" else ""
+                        spinner.set_activity(_phase_label, _detail)
+                        self._liveness_set(_phase_label, _detail)
                     elif state == "end":
                         timeline.end(phase, event.get("duration"))
                         if phase == "tool":
                             spinner.set_activity("Running tool")
+                            self._liveness_set("Running tool")
                     elif state == "error":
                         timeline.end(phase, event.get("duration"), ok=False, label=event.get("label"))
                 elif event_type == "thought_delta":
@@ -2883,6 +3001,7 @@ class DarkGPTApp(App):
                     thought.set_thought(joined, time.perf_counter() - started)
                     # Keep the live indicator reactive while reasoning streams.
                     spinner.set_activity("Thinking", f"reasoning · {len(joined)} chars")
+                    self._liveness_set("Thinking", f"reasoning · {len(joined)} chars")
                 elif event_type == "thought":
                     if thought is None:
                         thought = ThoughtBlock(event.get("text", ""), float(event.get("duration") or 0.0))
@@ -2897,20 +3016,30 @@ class DarkGPTApp(App):
                 elif event_type == "subagent_start":
                     role = str(event.get("role") or "explore")
                     task = str(event.get("task") or "")
-                    key = f"{role}|{task}"
+                    key = f"{role}|{task}|{len(sub_cards)}"
                     sub_card = SubagentCard(role, task)
                     sub_cards[key] = sub_card
+                    self._active_subagents = len(sub_cards)
+                    self._liveness_set("Subagents", f"{role}: {task[:50]}")
                     await conv.mount(sub_card, before=assistant)
                 elif event_type == "subagent_end":
                     role = str(event.get("role") or "explore")
                     task = str(event.get("task") or "")
                     key = f"{role}|{task}"
+                    # best-effort match
                     sub_card = sub_cards.pop(key, None)
+                    if sub_card is None and sub_cards:
+                        # try prefix match
+                        for k in list(sub_cards.keys()):
+                            if k.startswith(f"{role}|{task}|"):
+                                sub_card = sub_cards.pop(k)
+                                break
                     if sub_card is not None:
                         sub_card.finish(
                             bool(event.get("ok")), str(event.get("preview") or event.get("error") or ""),
                             float(event.get("duration") or 0.0),
                         )
+                    self._active_subagents = len(sub_cards)
                     self._delegates.append({
                         "role": role, "task": task,
                         "preview": str(event.get("preview") or event.get("error") or ""),
@@ -2932,6 +3061,7 @@ class DarkGPTApp(App):
                         await conv.mount(card, before=assistant)
                     timeline.start("tool", display)
                     spinner.set_activity("Running tool", display)
+                    self._liveness_set("Running tool", display)
                 elif event_type == "tool_output":
                     if bg_names.get(event.get("name"), False):
                         continue
@@ -3020,6 +3150,7 @@ class DarkGPTApp(App):
             self._system_note(f"Error: {exc}")
         finally:
             spinner.finish(not failed)
+            self._liveness_stop(not failed)
             if findings_header is not None:
                 await conv.mount(SectionLabel("RESPONSE", "#8ab4f8"), before=assistant)
             self.busy = False

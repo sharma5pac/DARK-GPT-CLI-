@@ -299,7 +299,9 @@ async def check_tui():
             mem_path.unlink()
 
         # Repeat guard helper exists and is result-aware.
-        assert (C.MAX_REPEAT_CALLS, C.MAX_TOOLS_PER_TURN, C.MAX_STEPS) == (3, 14, 14)
+        assert C.MAX_REPEAT_CALLS == 3
+        assert C.DEFAULT_TOOLS_PER_TURN >= 40
+        assert C.DEFAULT_MAX_STEPS >= 28
         assert (C.MAX_VERIFY_ROUNDS, C.MAX_REVIEW_ROUNDS, C.MAX_SUBAGENTS_PER_TURN) == (2, 1, 3)
         ok("guardrails configured (repeat/tools/steps/verify/review/subagents)")
 

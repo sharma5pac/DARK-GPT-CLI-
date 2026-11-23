@@ -91,7 +91,9 @@ def _run_selenium(job: Dict[str, Any], steps: List[Dict[str, Any]], out: Dict[st
     driver_path = shutil.which("chromedriver") or "/usr/bin/chromedriver"
     service = Service(executable_path=driver_path)
     driver = webdriver.Chrome(service=service, options=options)
-    driver.set_page_load_timeout(int(job.get("nav_timeout", 30)))
+    nav_timeout = max(20, int(job.get("nav_timeout", 120)))
+    driver.set_page_load_timeout(nav_timeout)
+    driver.set_script_timeout(nav_timeout)
     driver.implicitly_wait(3)
     try:
         for step in steps:
@@ -186,6 +188,38 @@ def _one_selenium(driver: Any, step: Dict[str, Any], cookies: List[Dict[str, Any
             record["result"] = _cookie_dicts(driver)
         elif action == "js":
             record["result"] = driver.execute_script(str(step.get("script") or ""))
+        elif action in ("crawl", "rank", "search"):
+            query = str(step.get("query") or step.get("q") or "").lower().strip()
+            limit = max(1, min(int(step.get("limit", 20)), 100))
+            include_text = bool(step.get("include_text", False))
+            els = driver.find_elements("tag name", "a")
+            seen = set(); scored = []
+            for e in els:
+                try:
+                    href = (e.get_attribute("href") or "").strip()
+                    text = (e.text or "").strip()
+                except Exception:
+                    continue
+                if not href.startswith(("http://", "https://")) or href in seen:
+                    continue
+                seen.add(href)
+                score = 1
+                hay = (text + " " + href).lower()
+                if query:
+                    for tok in [t for t in query.split() if t]:
+                        if tok in hay:
+                            score += 5
+                if any(x in href.lower() for x in ["/login", "/signin", "/admin", "/portal", "/api", "/account"]):
+                    score += 2
+                scored.append({"score": score, "text": text[:200], "href": href})
+            scored.sort(key=lambda x: (-x["score"], x["href"]))
+            out = {"query": query, "count": len(scored[:limit]), "results": scored[:limit], "title": driver.title, "url": driver.current_url}
+            if include_text:
+                try:
+                    out["page_text"] = (driver.find_element("tag name", "body").text or "")[:8000]
+                except Exception:
+                    pass
+            record["result"] = out
         else:
             raise RuntimeError(f"unknown action: {action}")
         record["ok"] = True
@@ -211,10 +245,12 @@ def _run_playwright(job: Dict[str, Any], steps: List[Dict[str, Any]], out: Dict[
             viewport={"width": 1440, "height": 1100},
         )
         page = context.new_page()
-        page.set_default_timeout(int(job.get("nav_timeout", 30)) * 1000)
+        nav_timeout = max(20, int(job.get("nav_timeout", 120)))
+        page.set_default_timeout(nav_timeout * 1000)
+        page.set_default_navigation_timeout(nav_timeout * 1000)
         try:
             for step in steps:
-                out["steps"].append(_one_playwright(page, step))
+                out["steps"].append(_one_playwright(page, context, step))
             out["final_url"] = page.url
             out["title"] = page.title()
             out["text"] = (page.locator("body").inner_text() or "")[:20000]
@@ -223,7 +259,7 @@ def _run_playwright(job: Dict[str, Any], steps: List[Dict[str, Any]], out: Dict[
             browser.close()
 
 
-def _one_playwright(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
+def _one_playwright(page: Any, context: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     action = str(step.get("action") or "").strip()
     record: Dict[str, Any] = {"action": action}
     try:
@@ -279,9 +315,14 @@ def _one_playwright(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
             page.go_back()
             record["result"] = {"url": page.url}
         elif action == "cookies":
-            record["result"] = context.cookies()
+            try:
+                record["result"] = context.cookies()
+            except Exception:
+                record["result"] = []
         elif action == "js":
             record["result"] = page.evaluate(str(step.get("script") or ""))
+        elif action in ("crawl", "rank", "search"):
+            record["result"] = _crawl_rank_playwright(page, step)
         else:
             raise RuntimeError(f"unknown action: {action}")
         record["ok"] = True
@@ -291,9 +332,84 @@ def _one_playwright(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
+def _crawl_rank_playwright(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
+    query = str(step.get("query") or step.get("q") or "").lower().strip()
+    limit = max(1, min(int(step.get("limit", 20)), 100))
+    include_text = bool(step.get("include_text", False))
+    items = []
+    try:
+        links = page.eval_on_selector_all("a[href]", "els => els.map(e => ({text:(e.innerText||'').trim(), href:e.href||'', title:e.title||''}))")
+    except Exception:
+        links = []
+    seen = set()
+    scored = []
+    for l in links or []:
+        href = str(l.get("href") or "").strip()
+        text = str(l.get("text") or "").strip()
+        if not href.startswith(("http://", "https://")) or href in seen:
+            continue
+        seen.add(href)
+        score = 1
+        hay = (text + " " + href + " " + str(l.get("title") or "")).lower()
+        if query:
+            for tok in [t for t in query.split() if t]:
+                if tok in hay:
+                    score += 5
+        if any(x in href.lower() for x in ["/login", "/signin", "/admin", "/portal", "/api", "/account"]):
+            score += 2
+        scored.append({"score": score, "text": text[:200], "href": href, "title": str(l.get("title") or "")[:200]})
+    scored.sort(key=lambda x: (-x["score"], x["href"]))
+    out = {"query": query, "count": len(scored[:limit]), "results": scored[:limit]}
+    if include_text:
+        try:
+            out["page_text"] = (page.locator("body").inner_text() or "")[:8000]
+        except Exception:
+            pass
+    out["title"] = page.title()
+    out["url"] = page.url
+    return out
+
+
+def _normalize_action(a: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(a, str):
+        if a.startswith(("http://", "https://", "file://", "data:")):
+            return {"action": "navigate", "url": a}
+        return {"action": "extract", "selector": a}
+    if not isinstance(a, dict):
+        return None
+    d = dict(a)
+    if d.get("action"):
+        return d
+    for k in ("navigate", "goto", "open", "url"):
+        if k in d and isinstance(d[k], str):
+            return {"action": "navigate", "url": d[k], **{x: y for x, y in d.items() if x != k}}
+    if "wait" in d:
+        w = d["wait"]
+        if isinstance(w, dict): return {"action":"wait", **w}
+        if isinstance(w, (int,float)): return {"action":"wait","ms":int(w)}
+        if isinstance(w, str): return {"action":"wait","selector":w}
+    for k in ("click","fill","extract","screenshot","scroll","js","crawl","rank","search"):
+        if k in d:
+            v=d[k]
+            if isinstance(v, dict): return {"action":k, **v}
+            if k in ("crawl","rank","search"): return {"action":k, "query": str(v)}
+            if k=="click": return {"action":"click","selector":str(v)}
+            if k=="fill": return {"action":"fill","value":str(v)}
+            if k=="extract": return {"action":"extract","selector":str(v)}
+            if k=="screenshot": return {"action":"screenshot","path":str(v)}
+            if k=="scroll": return {"action":"scroll","direction":str(v)}
+            if k=="js": return {"action":"js","script":str(v)}
+    return d
+
+
 def main() -> None:
     job: Dict[str, Any] = json.loads(sys.argv[1]) if len(sys.argv) > 1 else json.loads(sys.stdin.read())
-    steps: List[Dict[str, Any]] = job.get("actions") or []
+    raw_steps = job.get("actions") or []
+    steps: List[Dict[str, Any]] = []
+    for a in raw_steps:
+        n = _normalize_action(a)
+        if n:
+            steps.append(n)
     out: Dict[str, Any] = {"ok": False, "engine": "", "steps": [], "warnings": []}
     engine = str(job.get("engine") or "auto").lower()
     order = ["playwright", "selenium"] if engine in ("auto", "playwright") else ["selenium"]

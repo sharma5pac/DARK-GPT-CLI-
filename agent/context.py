@@ -173,16 +173,25 @@ def system_extras(
     # Active target state — gives the agent dynamic memory across turns.
     try:
         from utils import appconfig as _cfg
-        from agent import knowledge_graph as kg, evidence as ev
+        from agent import knowledge_graph as kg, evidence as ev, planner as pl
         target = str(_cfg.get("active_target") or "").strip()
         if target:
             g = kg.summary(target)
             c = g.get("counts") or {}
             lines = [f"Active target: {target}", f"Graph: hosts={c.get('host',0)} services={c.get('service',0)} endpoints={c.get('endpoint',0)} findings={c.get('finding',0)}"]
             for f in g.get("recent_findings") or []:
-                lines.append(f"- finding [{f.get('severity','info')}] {f.get('title','')}: {(f.get('details') or '')[:120]}")
+                lines.append(f"- finding [{f.get('severity','info')}/{f.get('status','attempted') if 'status' in f else ''}] {f.get('title','')}: {(f.get('details') or '')[:120]}")
             e = ev.summary(target)
             lines.append(f"Evidence: {e.get('count',0)} entries, last={e.get('last_ts') or '-'}")
+            p = pl.summary(target)
+            if p.get("objective"):
+                lines.append(f"Objective: {p['objective'][:160]}")
+            for h in p.get("open_hypotheses") or []:
+                lines.append(f"- hypothesis [{h.get('status','open')}] {str(h.get('text',''))[:120]}")
+            for o in (p.get("recent_observations") or [])[-3:]:
+                lines.append(f"- obs: {str(o.get('observed',''))[:100]} | delta: {str(o.get('hypothesis_delta',''))[:80]} | next: {str(o.get('next_action',''))[:80]}")
+            for d in (p.get("dead_ends") or [])[-3:]:
+                lines.append(f"- dead_end: {str(d.get('signature',''))[:80]} -> pivot: {str(d.get('pivot',''))[:80]}")
             parts.append("Target state (dynamic memory — update it as you learn):\n" + "\n".join(lines))
     except Exception:
         pass

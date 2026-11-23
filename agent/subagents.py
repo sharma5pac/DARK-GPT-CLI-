@@ -49,24 +49,36 @@ or exactly OK. Do not restate the diff.""",
 identify the most likely root cause of any failure and the smallest fix, plus
 the 1-3 missing test cases that would prevent regression. Max 200 words.""",
     "recon": """You are a reconnaissance subagent. Build target state, not noise.
-Use read-only tools to identify hosts, services, endpoints, HTTP methods, auth surfaces,
-tech fingerprints, and exposed inputs. Return structured lines the main agent can ingest:
-HOST <host> <notes> | SERVICE <host> <port> <proto> <name> | ENDPOINT <url> <notes>
-FINDING <severity> <title> :: <details>. End with the highest-value next probe.""",
-    "vuln_analysis": """You are a vulnerability-analysis subagent. Reason from evidence.
-Correlate endpoints, params, auth state, and responses to form testable hypotheses.
-Do not claim exploitation. For each hypothesis give: asset, hypothesis, why plausible,
-minimal non-destructive test, expected signal, and how it could chain with other findings.""",
-    "exploit_validation": """You are an exploit-validation subagent. You are proof-first.
-You cannot execute destructive actions; propose or analyze validation using available evidence.
-For each candidate: status (attempted/proved/false_positive), exact reproduction steps,
-evidence needed/captured, impact, and safe remediation. Never mark proved without reproducible evidence.""",
-    "reporting": """You are a reporting subagent. Produce structured, defensible output.
-Summarize scope, target state, proved vs attempted findings, reproduction steps, evidence refs,
-severity, impact, and remediation. Be precise and omit unsupported claims.""",
+Use read-only tools to identify hosts, services, endpoints, HTTP methods, auth surfaces, tech fingerprints, and exposed inputs.
+Return a final JSON object in a ```json``` block with schema:
+{"hosts":[{"host":"","notes":""}],"services":[{"host":"","port":0,"proto":"tcp","name":"","notes":""}],"endpoints":[{"url":"","method":"","auth":"","notes":""}],"findings":[{"title":"","severity":"info","status":"attempted","asset":"","details":"","evidence_ref":""}],"next_step":""}
+No prose outside JSON unless necessary.""",
+    "vuln_analysis": """You are a vulnerability-analysis subagent. Reason from evidence. Do not claim exploitation.
+Return a final JSON object in a ```json``` block with schema:
+{"hypotheses":[{"asset":"","hypothesis":"","why":"","minimal_test":"","expected_signal":"","chain":"","confidence":0.0}],"next_step":""}""",
+    "exploit_validation": """You are an exploit-validation subagent. You are proof-first. No destructive actions.
+Return a final JSON object in a ```json``` block with schema:
+{"validations":[{"title":"","asset":"","status":"attempted|proved|false_positive","repro":"","evidence_ref":"","impact":"","remediation":"","confidence":0.0}],"next_step":""}
+Never mark proved without reproducible evidence.""",
+    "reporting": """You are a reporting subagent. Produce structured, defensible output. No unsupported claims.
+Return a final JSON object in a ```json``` block with schema:
+{"summary":"","findings":[{"title":"","severity":"info","status":"attempted","asset":"","repro":"","evidence_ref":"","impact":"","remediation":""}],"remediation":[""]}""",
 }
 
 SUBTOOL_RE = re.compile(r"```subtool\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+ROLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "recon": {"type": "object", "required": ["hosts", "services", "endpoints", "findings", "next_step"], "properties": {
+        "hosts": {"type": "array"}, "services": {"type": "array"}, "endpoints": {"type": "array"},
+        "findings": {"type": "array"}, "next_step": {"type": "string"}}},
+    "vuln_analysis": {"type": "object", "required": ["hypotheses", "next_step"], "properties": {
+        "hypotheses": {"type": "array"}, "next_step": {"type": "string"}}},
+    "exploit_validation": {"type": "object", "required": ["validations", "next_step"], "properties": {
+        "validations": {"type": "array"}, "next_step": {"type": "string"}}},
+    "reporting": {"type": "object", "required": ["summary", "findings", "remediation"], "properties": {
+        "summary": {"type": "string"}, "findings": {"type": "array"}, "remediation": {"type": "array"}}},
+}
 
 
 @dataclass
@@ -79,6 +91,8 @@ class SubagentResult:
     duration: float
     error: str = ""
     steps: int = 0
+    parsed: Optional[Dict[str, Any]] = None
+    schema_ok: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -105,6 +119,41 @@ def _extract_subtool(text: str) -> Optional[Dict[str, Any]]:
 
 def _strip_subtool(text: str) -> str:
     return SUBTOOL_RE.sub("", text or "").strip()
+
+
+def _extract_json_obj(text: str) -> Optional[Dict[str, Any]]:
+    text = (text or "").strip()
+    if not text:
+        return None
+    # fenced json
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+    # last bare object
+    for m in re.finditer(r"(\{[\s\S]*\})", text):
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    return None
+
+
+def parse_role_output(role: str, text: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    obj = _extract_json_obj(text)
+    schema = ROLE_SCHEMAS.get(role)
+    if not schema:
+        return obj, bool(obj)
+    if not isinstance(obj, dict):
+        return None, False
+    required = schema.get("required") or []
+    ok = all(k in obj for k in required)
+    return obj, ok
 
 
 async def run_subagent(
@@ -151,7 +200,8 @@ async def run_subagent(
             })
         else:
             text = "Step budget exhausted without a final answer; report partial findings only."
-        return SubagentResult(role=role, task=task, ok=True, text=text[:6000], model=model, duration=_dur(started), steps=steps)
+        parsed, schema_ok = parse_role_output(role, text)
+        return SubagentResult(role=role, task=task, ok=True, text=text[:6000], model=model, duration=_dur(started), steps=steps, parsed=parsed, schema_ok=schema_ok)
     except Exception as exc:  # noqa: BLE001
         return SubagentResult(role=role, task=task, ok=False, text="", model=model, duration=_dur(started), error=str(exc)[:300], steps=steps)
 

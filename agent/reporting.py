@@ -1,14 +1,19 @@
-"""Generate markdown/HTML pentest reports from graph + evidence ledger."""
+"""Generate pentest reports from graph + evidence ledger (md/html/json/csv)."""
 
 from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from agent import evidence, knowledge_graph as kg
+
+
+SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
 def _ts(ts: Any) -> str:
@@ -18,170 +23,220 @@ def _ts(ts: Any) -> str:
         return "-"
 
 
-def build_markdown(target: str) -> str:
+def _sorted_findings(target: str) -> List[Dict[str, Any]]:
+    findings = kg.query(target, kind="finding", limit=500)
+    findings.sort(key=lambda n: (
+        SEV_ORDER.get(str(n.get("attrs", {}).get("severity", "info")).lower(), 9),
+        0 if str(n.get("attrs", {}).get("status", "attempted")).lower() == "proved" else 1,
+    ))
+    return findings
+
+
+def build_report_data(target: str) -> Dict[str, Any]:
     g = kg.summary(target)
     ev = evidence.summary(target)
-    findings = kg.query(target, kind="finding", limit=200)
-    hosts = kg.query(target, kind="host", limit=200)
-    services = kg.query(target, kind="service", limit=500)
-    endpoints = kg.query(target, kind="endpoint", limit=500)
-    ev_entries = evidence.read_entries(target, limit=200)
+    findings = _sorted_findings(target)
+    ev_entries = evidence.read_entries(target, limit=500)
+    counts = g.get("counts", {})
+    proved = sum(1 for n in findings if str(n.get("attrs", {}).get("status", "attempted")).lower() == "proved")
+    attempted = sum(1 for n in findings if str(n.get("attrs", {}).get("status", "attempted")).lower() != "proved")
+    finding_rows = []
+    for i, n in enumerate(findings, 1):
+        a = n.get("attrs", {})
+        finding_rows.append({
+            "index": i,
+            "id": n.get("key") or n.get("id"),
+            "title": a.get("title") or n.get("id") or "Finding",
+            "severity": str(a.get("severity", "info")).lower(),
+            "status": str(a.get("status", "attempted")).lower(),
+            "asset": a.get("asset") or "",
+            "details": a.get("details") or "",
+            "repro": a.get("repro") or a.get("reproduction") or "",
+            "impact": a.get("impact") or "",
+            "remediation": a.get("remediation") or "",
+            "evidence_ref": a.get("evidence_ref") or "",
+            "confidence": a.get("confidence"),
+            "sources": n.get("sources") or [],
+        })
+    trace = []
+    for e in ev_entries:
+        trace.append({
+            "id": e.get("id"),
+            "ts": e.get("ts"),
+            "time_utc": _ts(e.get("ts")),
+            "tool": e.get("tool"),
+            "ok": bool(e.get("ok")),
+            "source": e.get("source"),
+            "tags": e.get("tags") or [],
+            "result_sha256": e.get("result_sha256"),
+            "result_bytes": e.get("result_bytes"),
+            "result_preview": str(e.get("result_preview") or "")[:500],
+        })
+    return {
+        "target": g.get("target", target),
+        "slug": g.get("slug", ""),
+        "generated_at": _ts(time.time()),
+        "generated_ts": time.time(),
+        "summary": {
+            "hosts": counts.get("host", 0),
+            "services": counts.get("service", 0),
+            "endpoints": counts.get("endpoint", 0),
+            "findings": counts.get("finding", 0),
+            "proved": proved,
+            "attempted_or_unverified": attempted,
+            "evidence_entries": ev.get("count", 0),
+            "evidence_ok": ev.get("ok", 0),
+            "evidence_failed": ev.get("failed", 0),
+        },
+        "graph_path": g.get("path", ""),
+        "evidence_path": ev.get("path", ""),
+        "findings": finding_rows,
+        "attack_surface": {
+            "hosts": [n.get("attrs", {}) for n in kg.query(target, kind="host", limit=500)],
+            "services": [n.get("attrs", {}) for n in kg.query(target, kind="service", limit=1000)],
+            "endpoints": [n.get("attrs", {}) for n in kg.query(target, kind="endpoint", limit=1000)],
+        },
+        "execution_trace": trace,
+        "evidence_by_tool": ev.get("by_tool") or {},
+    }
 
+
+def build_markdown(target: str) -> str:
+    d = build_report_data(target)
+    s = d["summary"]
     lines: List[str] = []
-    lines.append(f"# Pentest Report — {g.get('target', target)}")
+    lines.append(f"# Pentest Report — {d['target']}")
     lines.append("")
-    lines.append(f"- Generated: {_ts(time.time())}")
-    lines.append(f"- Target slug: `{g.get('slug','')}`")
-    lines.append(f"- Knowledge graph: `{g.get('path','')}`")
-    lines.append(f"- Evidence ledger: `{ev.get('path','')}`")
-    lines.append(f"- Evidence entries: {ev.get('count',0)} (ok={ev.get('ok',0)}, failed={ev.get('failed',0)})")
+    lines.append(f"- Generated: {d['generated_at']}")
+    lines.append(f"- Target slug: `{d['slug']}`")
+    lines.append(f"- Knowledge graph: `{d['graph_path']}`")
+    lines.append(f"- Evidence ledger: `{d['evidence_path']}`")
+    lines.append(f"- Evidence entries: {s['evidence_entries']} (ok={s['evidence_ok']}, failed={s['evidence_failed']})")
     lines.append("")
     lines.append("## Executive Summary")
     lines.append("")
-    counts = g.get("counts", {})
-    lines.append(f"Discovered **{counts.get('host',0)} hosts**, **{counts.get('service',0)} services**, **{counts.get('endpoint',0)} endpoints**, **{counts.get('finding',0)} findings**.")
-    lines.append("")
-    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    findings_sorted = sorted(findings, key=lambda n: sev_order.get(str(n.get("attrs", {}).get("severity", "info")).lower(), 9))
-    proved = sum(1 for n in findings_sorted if str(n.get("attrs",{}).get("status","attempted")).lower() == "proved")
-    attempted = sum(1 for n in findings_sorted if str(n.get("attrs",{}).get("status","attempted")).lower() != "proved")
-    lines.append(f"Findings status: **{proved} proved**, **{attempted} attempted/unverified**. A finding is only proved with reproducible evidence.")
+    lines.append(f"Discovered **{s['hosts']} hosts**, **{s['services']} services**, **{s['endpoints']} endpoints**, **{s['findings']} findings**.")
+    lines.append(f"Findings status: **{s['proved']} proved**, **{s['attempted_or_unverified']} attempted/unverified**. A finding is only proved with reproducible evidence.")
     lines.append("")
     lines.append("## Findings")
     lines.append("")
-    if not findings_sorted:
+    if not d["findings"]:
         lines.append("_No findings recorded yet._")
-    else:
-        for i, n in enumerate(findings_sorted, 1):
-            a = n.get("attrs", {})
-            sev = str(a.get("severity", "info")).upper()
-            status = str(a.get("status", "attempted")).upper()
-            title = a.get("title") or n.get("id") or "Finding"
-            lines.append(f"### {i}. [{sev}] [{status}] {title}")
-            if a.get("asset"):
-                lines.append(f"- Asset: `{a['asset']}`")
-            if a.get("details"):
-                lines.append("")
-                lines.append(str(a["details"]))
-            if a.get("repro") or a.get("reproduction"):
-                lines.append("\n**Reproduction**\n")
-                lines.append(str(a.get("repro") or a.get("reproduction")))
-            if a.get("impact"):
-                lines.append(f"\n**Impact**\n\n{a['impact']}")
-            if a.get("remediation"):
-                lines.append(f"\n**Remediation**\n\n{a['remediation']}")
-            if a.get("evidence_ref"):
-                lines.append(f"\n- Evidence ref: `{a['evidence_ref']}`")
-            lines.append("")
+    for f in d["findings"]:
+        lines.append(f"### {f['index']}. [{f['severity'].upper()}] [{f['status'].upper()}] {f['title']}")
+        if f.get("asset"):
+            lines.append(f"- Asset: `{f['asset']}`")
+        if f.get("confidence") is not None:
+            lines.append(f"- Confidence: `{f['confidence']}`")
+        if f.get("details"):
+            lines.append(f"\n{f['details']}")
+        if f.get("repro"):
+            lines.append(f"\n**Reproduction**\n\n{f['repro']}")
+        if f.get("impact"):
+            lines.append(f"\n**Impact**\n\n{f['impact']}")
+        if f.get("remediation"):
+            lines.append(f"\n**Remediation**\n\n{f['remediation']}")
+        if f.get("evidence_ref"):
+            lines.append(f"\n- Evidence ref: `{f['evidence_ref']}`")
+        lines.append("")
     lines.append("## Attack Surface")
     lines.append("")
-    lines.append("### Hosts")
+    for section, key, fmt in [("Hosts", "hosts", lambda a: f"- `{a.get('host') or a.get('id','')}`" + (f" — {a.get('notes')}" if a.get('notes') else "")),
+                              ("Services", "services", lambda a: f"- `{a.get('host')}:{a.get('port')}/{a.get('proto','tcp')}`" + (f" ({a.get('name') or a.get('product')})" if (a.get('name') or a.get('product')) else "")),
+                              ("Endpoints", "endpoints", lambda a: f"- {a.get('url') or a.get('id','')}")]:
+        lines.append(f"### {section}")
+        lines.append("")
+        items = d["attack_surface"].get(key) or []
+        for a in items[:300]:
+            lines.append(fmt(a))
+        if not items:
+            lines.append("_None_")
+        lines.append("")
+    lines.append("## Execution Trace (recent evidence)")
     lines.append("")
-    for n in hosts[:200]:
-        a = n.get("attrs", {})
-        lines.append(f"- `{a.get('host') or n.get('id')}`" + (f" — {a.get('notes')}" if a.get("notes") else ""))
-    if not hosts:
-        lines.append("_None_")
-    lines.append("")
-    lines.append("### Services")
-    lines.append("")
-    for n in services[:300]:
-        a = n.get("attrs", {})
-        name = a.get("name") or a.get("product") or ""
-        extra = f" ({name})" if name else ""
-        lines.append(f"- `{a.get('host')}:{a.get('port')}/{a.get('proto','tcp')}`{extra}")
-    if not services:
-        lines.append("_None_")
-    lines.append("")
-    lines.append("### Endpoints")
-    lines.append("")
-    for n in endpoints[:300]:
-        a = n.get("attrs", {})
-        lines.append(f"- {a.get('url') or n.get('id')}")
-    if not endpoints:
-        lines.append("_None_")
-    lines.append("")
-    lines.append("## Evidence (recent)")
-    lines.append("")
-    lines.append("| Time (UTC) | Tool | OK | SHA-256 | Preview |")
-    lines.append("|---|---|---:|---|---|")
-    for e in ev_entries[-100:]:
+    lines.append("| Time (UTC) | ID | Tool | OK | SHA-256 | Preview |")
+    lines.append("|---|---|---|---:|---|---|")
+    for e in d["execution_trace"][-100:]:
         preview = str(e.get("result_preview") or "").replace("\n", " ")[:120].replace("|", "\\|")
-        lines.append(f"| {_ts(e.get('ts'))} | `{e.get('tool','')}` | {'yes' if e.get('ok') else 'no'} | `{str(e.get('result_sha256',''))[:12]}` | {preview} |")
-    if not ev_entries:
-        lines.append("| - | - | - | - | _No evidence recorded_ |")
-    lines.append("")
-    lines.append("## Evidence Tool Counts")
-    lines.append("")
-    for tool, count in (ev.get("by_tool") or {}).items():
-        lines.append(f"- `{tool}`: {count}")
-    if not ev.get("by_tool"):
-        lines.append("_None_")
+        lines.append(f"| {e.get('time_utc','')} | `{str(e.get('id',''))[:12]}` | `{e.get('tool','')}` | {'yes' if e.get('ok') else 'no'} | `{str(e.get('result_sha256',''))[:12]}` | {preview} |")
+    if not d["execution_trace"]:
+        lines.append("| - | - | - | - | - | _No evidence recorded_ |")
     lines.append("")
     return "\n".join(lines)
 
 
 def build_html(target: str) -> str:
-    md = build_markdown(target)
-    # Minimal, dependency-free HTML rendering: escaped markdown in <pre> + simple heading extraction isn't great;
-    # render a clean HTML report directly.
-    g = kg.summary(target)
-    ev = evidence.summary(target)
-    findings = kg.query(target, kind="finding", limit=200)
-    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    findings_sorted = sorted(findings, key=lambda n: sev_order.get(str(n.get("attrs", {}).get("severity", "info")).lower(), 9))
+    d = build_report_data(target)
+    s = d["summary"]
     def esc(x: Any) -> str: return html.escape(str(x or ""))
 
-    rows = []
-    for e in evidence.read_entries(target, limit=100):
-        rows.append("<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>".format(
-            esc(_ts(e.get("ts"))), esc(e.get("tool")), "yes" if e.get("ok") else "no",
-            esc(str(e.get("result_sha256", ""))[:12]),
-            esc(str(e.get("result_preview", "")).replace("\n", " ")[:160]),
-        ))
     finding_blocks = []
-    for i, n in enumerate(findings_sorted, 1):
-        a = n.get("attrs", {})
-        status = esc(str(a.get("status", "attempted")).upper())
-        sev = esc(str(a.get("severity","info")).upper())
-        body = f"<pre>{esc(a.get('details',''))}</pre>"
-        if a.get("repro") or a.get("reproduction"):
-            body += f"<h4>Reproduction</h4><pre>{esc(a.get('repro') or a.get('reproduction'))}</pre>"
-        if a.get("impact"):
-            body += f"<h4>Impact</h4><pre>{esc(a.get('impact'))}</pre>"
-        if a.get("remediation"):
-            body += f"<h4>Remediation</h4><pre>{esc(a.get('remediation'))}</pre>"
-        if a.get("evidence_ref"):
-            body += f"<p>Evidence ref: <code>{esc(a.get('evidence_ref'))}</code></p>"
-        finding_blocks.append(f"<section class='finding'><h3>{i}. [{sev}] [{status}] {esc(a.get('title') or n.get('id'))}</h3>{body}</section>")
-    counts = g.get("counts", {})
-    proved = sum(1 for n in findings_sorted if str(n.get("attrs",{}).get("status","attempted")).lower() == "proved")
-    attempted = sum(1 for n in findings_sorted if str(n.get("attrs",{}).get("status","attempted")).lower() != "proved")
-    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Report {esc(target)}</title>
-<style>body{{font-family:system-ui,sans-serif;margin:24px;max-width:1100px}} table{{border-collapse:collapse;width:100%}} td,th{{border:1px solid #ddd;padding:6px;font-size:13px;vertical-align:top}} pre{{white-space:pre-wrap;background:#111;color:#eee;padding:12px;border-radius:8px}} .finding{{margin:16px 0}} code{{background:#f3f3f3;padding:1px 4px;border-radius:4px}}</style>
+    for f in d["findings"]:
+        body = f"<pre>{esc(f.get('details',''))}</pre>"
+        if f.get("repro"):
+            body += f"<h4>Reproduction</h4><pre>{esc(f['repro'])}</pre>"
+        if f.get("impact"):
+            body += f"<h4>Impact</h4><pre>{esc(f['impact'])}</pre>"
+        if f.get("remediation"):
+            body += f"<h4>Remediation</h4><pre>{esc(f['remediation'])}</pre>"
+        meta = []
+        if f.get("asset"): meta.append(f"Asset: <code>{esc(f['asset'])}</code>")
+        if f.get("evidence_ref"): meta.append(f"Evidence: <code>{esc(f['evidence_ref'])}</code>")
+        if f.get("confidence") is not None: meta.append(f"Confidence: <code>{esc(f['confidence'])}</code>")
+        if meta: body = "<p>" + " · ".join(meta) + "</p>" + body
+        finding_blocks.append(f"<section class='finding'><h3>{f['index']}. [{esc(f['severity'].upper())}] [{esc(f['status'].upper())}] {esc(f['title'])}</h3>{body}</section>")
+
+    rows = []
+    for e in d["execution_trace"][-150:]:
+        rows.append("<tr><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>".format(
+            esc(e.get("time_utc")), esc(str(e.get("id",""))[:12]), esc(e.get("tool")), "yes" if e.get("ok") else "no",
+            esc(str(e.get("result_sha256",""))[:12]), esc(str(e.get("result_preview","")).replace("\n"," ")[:160])
+        ))
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Report {esc(d['target'])}</title>
+<style>body{{font-family:system-ui,sans-serif;margin:24px;max-width:1100px}} table{{border-collapse:collapse;width:100%}} td,th{{border:1px solid #ddd;padding:6px;font-size:13px;vertical-align:top}} pre{{white-space:pre-wrap;background:#111;color:#eee;padding:12px;border-radius:8px}} .finding{{margin:16px 0;padding:8px 0;border-bottom:1px solid #eee}} code{{background:#f3f3f3;padding:1px 4px;border-radius:4px}}</style>
 </head><body>
-<h1>Pentest Report — {esc(g.get('target',target))}</h1>
-<p>Generated {_ts(time.time())} · Evidence {ev.get('count',0)} entries · Graph {esc(g.get('path',''))}</p>
+<h1>Pentest Report — {esc(d['target'])}</h1>
+<p>Generated {esc(d['generated_at'])} · Graph <code>{esc(d['graph_path'])}</code></p>
 <h2>Summary</h2><ul>
-<li>Hosts: {counts.get('host',0)}</li><li>Services: {counts.get('service',0)}</li><li>Endpoints: {counts.get('endpoint',0)}</li><li>Findings: {counts.get('finding',0)}</li>
-<li>Proved: {proved} · Attempted/unverified: {attempted}</li>
+<li>Hosts: {s['hosts']}</li><li>Services: {s['services']}</li><li>Endpoints: {s['endpoints']}</li><li>Findings: {s['findings']}</li>
+<li>Proved: {s['proved']} · Attempted/unverified: {s['attempted_or_unverified']}</li>
+<li>Evidence: {s['evidence_entries']} (ok={s['evidence_ok']}, failed={s['evidence_failed']})</li>
 </ul>
 <h2>Findings</h2>{''.join(finding_blocks) or '<p><em>No findings recorded yet.</em></p>'}
-<h2>Recent Evidence</h2>
-<table><thead><tr><th>Time</th><th>Tool</th><th>OK</th><th>SHA-256</th><th>Preview</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=5><em>None</em></td></tr>'}</tbody></table>
+<h2>Execution Trace</h2>
+<table><thead><tr><th>Time</th><th>ID</th><th>Tool</th><th>OK</th><th>SHA-256</th><th>Preview</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=6><em>None</em></td></tr>'}</tbody></table>
 </body></html>"""
+
+
+def build_json(target: str) -> str:
+    return json.dumps(build_report_data(target), indent=2, ensure_ascii=False)
+
+
+def build_csv(target: str) -> str:
+    d = build_report_data(target)
+    out = io.StringIO()
+    fieldnames = ["index", "id", "title", "severity", "status", "asset", "confidence", "evidence_ref", "details", "repro", "impact", "remediation", "sources"]
+    w = csv.DictWriter(out, fieldnames=fieldnames)
+    w.writeheader()
+    for f in d["findings"]:
+        row = dict(f)
+        row["sources"] = ";".join(row.get("sources") or [])
+        w.writerow({k: row.get(k, "") for k in fieldnames})
+    return out.getvalue()
 
 
 def write_report(target: str, fmt: str = "markdown", out: str = "") -> Dict[str, Any]:
     fmt = (fmt or "markdown").lower().strip()
     if fmt in ("md", "markdown"):
-        content = build_markdown(target)
-        ext = ".md"
+        content = build_markdown(target); ext = ".md"
     elif fmt in ("html", "htm"):
-        content = build_html(target)
-        ext = ".html"
+        content = build_html(target); ext = ".html"
+    elif fmt == "json":
+        content = build_json(target); ext = ".json"
+    elif fmt == "csv":
+        content = build_csv(target); ext = ".csv"
     else:
-        raise ValueError("fmt must be markdown or html")
+        raise ValueError("fmt must be markdown, html, json, or csv")
     if out:
         path = Path(out).expanduser()
         if not path.is_absolute():
