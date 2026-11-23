@@ -412,9 +412,14 @@ def main() -> None:
             steps.append(n)
     out: Dict[str, Any] = {"ok": False, "engine": "", "steps": [], "warnings": []}
     engine = str(job.get("engine") or "auto").lower()
-    order = ["playwright", "selenium"] if engine in ("auto", "playwright") else ["selenium"]
     if engine == "selenium":
         order = ["selenium"]
+    elif engine == "playwright":
+        order = ["playwright", "selenium"]
+    elif engine in ("selenium-first", "auto-selenium", "selenium_first"):
+        order = ["selenium", "playwright"]
+    else:  # auto
+        order = ["playwright", "selenium"]
     for name in order:
         try:
             if name == "playwright":

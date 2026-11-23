@@ -20,6 +20,38 @@ from typing import Any, Dict, List, Optional
 SESSION_DIR = Path.home() / ".cache" / "darkgpt" / "browser"
 WORKER = Path(__file__).with_name("browser_worker.py")
 DEFAULT_TIMEOUT = 120
+HEALTH_PATH = Path.home() / ".cache" / "darkgpt" / "browser" / "health.json"
+
+
+def _playwright_healthy() -> bool:
+    try:
+        if HEALTH_PATH.exists():
+            import json, time
+            data = json.loads(HEALTH_PATH.read_text(encoding="utf-8"))
+            # cache for 10 minutes
+            if time.time() - float(data.get("ts", 0)) < 600:
+                return bool(data.get("playwright_ok"))
+    except Exception:
+        pass
+    # Quick probe: import only, avoid full browser launch cost in hot path.
+    try:
+        import subprocess, json, time
+        proc = subprocess.run([
+            "/usr/bin/python3", "-c",
+            "from playwright.sync_api import sync_playwright; print('ok')"
+        ], capture_output=True, text=True, timeout=8)
+        ok = proc.returncode == 0 and "ok" in proc.stdout
+        HEALTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEALTH_PATH.write_text(json.dumps({"ts": time.time(), "playwright_ok": ok, "detail": (proc.stderr or proc.stdout)[-200:]}), encoding="utf-8")
+        return ok
+    except Exception:
+        try:
+            HEALTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+            import json, time
+            HEALTH_PATH.write_text(json.dumps({"ts": time.time(), "playwright_ok": False, "detail": "probe failed"}), encoding="utf-8")
+        except Exception:
+            pass
+        return False
 
 
 def _system_python() -> str:
@@ -131,10 +163,14 @@ def run(
 
     # Clamp up: agents often pass small timeouts; slow/JS-heavy sites need room.
     timeout = max(45, min(int(timeout or DEFAULT_TIMEOUT), 180))
+    engine = str(engine or "auto").lower()
+    # Auto-select: if playwright is known degraded, prefer selenium first.
+    if engine == "auto" and not _playwright_healthy():
+        engine = "selenium-first"  # worker will interpret; also keep compat
     state = _load_session(str(session)[:40] or "default")
     job = {
         "actions": steps,
-        "engine": str(engine or "auto"),
+        "engine": engine,
         "headless": bool(headless),
         "nav_timeout": timeout,
         "cookies": state.get("cookies") or [],

@@ -19,6 +19,7 @@ from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from agent import tokens as token_util
+from agent import jobs
 from agent.core import DEFAULT_MODEL, SYSTEM, ToolRegistry, run_agent
 from agent.skills import SkillRegistry
 from mcp_manager.client import MCPManager
@@ -51,6 +52,9 @@ COMMANDS: List[tuple[str, str]] = [
     ("/retry", "Re-run the last prompt (or /retry force)"),
     ("/pending", "Show or clear prompts queued while a turn was running"),
     ("/status", "Show model, MCP, tokens and 402 cooldown"),
+    ("/jobs", "List background tasks/jobs (/jobs <id> for log, /jobs kill <id>)"),
+    ("/budget", "Show/set tool/step budget (/budget tools 60, /budget steps 40)"),
+    ("/steps", "Alias for /budget steps <n>"),
     ("/mcp-verbose", "Toggle background MCP display (shown/hidden cards)"),
     ("/bg", "Show background tool findings (/bg <n> for full result of one call)"),
     ("/clipboard", "Show clipboard backends and QTerminal/X11/Wayland notes"),
@@ -1151,7 +1155,7 @@ class ToolsManagerScreen(ModalScreen[None]):
         self.refresh_list()
 
     def _tools(self) -> List[Dict[str, Any]]:
-        registry = ToolRegistry(self.app.mcp, disabled=set())
+        registry = ToolRegistry(self.app.mcp, disabled=set(), model=str(getattr(self.app, "model", "") or ""))
         rows = []
         for spec in registry.local_specs():
             fn = spec["function"]
@@ -1554,6 +1558,7 @@ class DarkGPTApp(App):
         self._liveness_started = 0.0
         self._liveness_timer = None
         self._active_subagents = 0
+        self._job_manager = jobs.JobManager()
 
     # ---------------------------------------------------------------- compose
     def compose(self) -> ComposeResult:
@@ -1780,7 +1785,7 @@ class DarkGPTApp(App):
         self.action_open_sessions()
 
     def _enabled_tool_count(self) -> int:
-        local = len([s for s in ToolRegistry(self.mcp, disabled=set()).local_specs() if s["function"]["name"] not in self.disabled_tools])
+        local = len([s for s in ToolRegistry(self.mcp, disabled=set(), model=self.model).local_specs() if s["function"]["name"] not in self.disabled_tools])
         mcp = len(
             self.mcp.list_tools(
                 disabled=self.disabled_tools,
@@ -1889,6 +1894,10 @@ class DarkGPTApp(App):
             await self.action_retry(force=arg == "force")
         elif name == "/status":
             self._show_status()
+        elif name == "/jobs":
+            await self._handle_jobs_command(parts)
+        elif name in ("/budget", "/steps"):
+            await self._handle_budget_command(name, parts)
         elif name == "/mcp-verbose":
             self.action_toggle_mcp_display()
         elif name == "/bg":
@@ -2567,6 +2576,108 @@ class DarkGPTApp(App):
             return 0
         return remaining
 
+    def _playwright_status(self) -> str:
+        cached = getattr(self, "_playwright_status_cache", None)
+        now = time.time()
+        if isinstance(cached, tuple) and now - cached[0] < 60:
+            return cached[1]
+        status = "unknown"
+        try:
+            import subprocess, json as _json
+            code = (
+                "from playwright.sync_api import sync_playwright;"
+                "p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop(); print('ok')"
+            )
+            proc = subprocess.run(["/usr/bin/python3", "-c", code], capture_output=True, text=True, timeout=20)
+            if proc.returncode == 0 and "ok" in proc.stdout:
+                status = "OK"
+            else:
+                err = (proc.stderr or proc.stdout or "unavailable").strip().splitlines()[-1][:120]
+                status = f"DEGRADED (fallback selenium) · {err}"
+        except Exception as e:
+            status = f"DEGRADED (fallback selenium) · {type(e).__name__}"
+        self._playwright_status_cache = (now, status)
+        return status
+
+    async def _handle_budget_command(self, name: str, parts: List[str]) -> None:
+        from agent.core import DEFAULT_TOOLS_PER_TURN, DEFAULT_MAX_STEPS
+        # /steps 40, /budget steps 40, /budget tools 60, /budget
+        if name == "/steps":
+            args = parts[1:]
+            key = "max_steps"
+        else:
+            args = parts[1:]
+            key = None
+            if args and args[0].lower() in ("tools", "tools_per_turn", "tool"):
+                key, args = "tools_per_turn", args[1:]
+            elif args and args[0].lower() in ("steps", "max_steps", "step"):
+                key, args = "max_steps", args[1:]
+        tools_per_turn = int(appconfig.get("tools_per_turn", DEFAULT_TOOLS_PER_TURN) or DEFAULT_TOOLS_PER_TURN)
+        max_steps = int(appconfig.get("max_steps", DEFAULT_MAX_STEPS) or DEFAULT_MAX_STEPS)
+        if not args:
+            self._system_note(
+                f"Budget: tools_per_turn={tools_per_turn} (10-200), max_steps={max_steps} (4-200)\n"
+                "Usage: /budget tools <n> | /budget steps <n> | /steps <n>"
+            )
+            return
+        try:
+            value = int(args[0])
+        except Exception:
+            self._system_note("Budget value must be an integer.")
+            return
+        if key == "tools_per_turn" or (key is None and args and name == "/budget" and len(parts) > 1 and parts[1].isdigit()):
+            key = "tools_per_turn"
+        if key is None:
+            self._system_note("Use /budget tools <n> or /budget steps <n>.")
+            return
+        if key == "tools_per_turn":
+            value = max(10, min(value, 200))
+            appconfig.update(tools_per_turn=value)
+            self._system_note(f"tools_per_turn set to {value}. Soft budget: agent summarizes instead of hard-failing.")
+        else:
+            value = max(4, min(value, 200))
+            appconfig.update(max_steps=value)
+            self._system_note(f"max_steps set to {value}. Restart not required; takes effect next turn.")
+
+    async def _handle_jobs_command(self, parts: List[str]) -> None:
+        # /jobs, /jobs <id>, /jobs kill <id>, /jobs log <id>
+        if not hasattr(self, "_job_manager") or self._job_manager is None:
+            self._job_manager = jobs.JobManager()
+        args = parts[1:]
+        if not args:
+            data = self._job_manager.list(limit=30)
+            rows = data.get("jobs", [])
+            if not rows:
+                self._system_note("No background jobs. Agent can start them with task_start; TUI tracks jobs started in this process.")
+                return
+            lines = ["Background jobs (most recent):"]
+            for j in rows[:30]:
+                dur = j.get("duration")
+                dur_s = f"{dur:.1f}s" if isinstance(dur, (int,float)) else "?"
+                lines.append(f"- {j.get('id')} [{j.get('status')}] exit={j.get('exit_code')} {dur_s} kind={j.get('kind')} :: {str(j.get('label',''))[:80]}")
+            lines.append("Use /jobs <id> for tail log, /jobs kill <id> to stop.")
+            self._system_note("\n".join(lines))
+            return
+        if args[0].lower() == "kill" and len(args) > 1:
+            res = await self._job_manager.kill(args[1])
+            if not res.get("ok"):
+                self._system_note(f"Kill failed: {res.get('error')}")
+            else:
+                j = res.get("job", {})
+                self._system_note(f"Killed {j.get('id')} status={j.get('status')} exit={j.get('exit_code')}")
+            return
+        if args[0].lower() == "log" and len(args) > 1:
+            jid = args[1]
+        else:
+            jid = args[0]
+        res = self._job_manager.log(jid, tail=6000)
+        if not res.get("ok"):
+            self._system_note(f"Job log failed: {res.get('error')}")
+            return
+        j = res.get("job", {})
+        out = str(j.get("output") or "(no output)")
+        self._system_note(f"Job {j.get('id')} [{j.get('status')}] exit={j.get('exit_code')}\n{out[-6000:]}")
+
     def _show_status(self) -> None:
         remaining = self._cooldown_remaining()
         label = provider_config()["label"]
@@ -2574,13 +2685,25 @@ class DarkGPTApp(App):
             key_state = "set" if get_api_key() else "MISSING (see /provider)"
         except Exception:
             key_state = "unknown"
+        try:
+            from agent.core import DEFAULT_TOOLS_PER_TURN, DEFAULT_MAX_STEPS
+        except Exception:
+            DEFAULT_TOOLS_PER_TURN, DEFAULT_MAX_STEPS = 40, 28
+        tools_per_turn = int(appconfig.get("tools_per_turn", DEFAULT_TOOLS_PER_TURN) or DEFAULT_TOOLS_PER_TURN)
+        max_steps = int(appconfig.get("max_steps", DEFAULT_MAX_STEPS) or DEFAULT_MAX_STEPS)
+        pw = self._playwright_status()
+        bg_jobs = self._job_manager.list(limit=200).get("jobs", []) if hasattr(self, "_job_manager") else []
+        running_jobs = len([j for j in bg_jobs if j.get("status") == "running"])
         lines = [
             f"model: {self.model}",
             f"provider: {label} · key: {key_state}",
             f"mode: {self.mode}",
+            f"budget: tools_per_turn={tools_per_turn} · max_steps={max_steps} (/budget tools N, /steps N)",
             f"mcp: {self.mcp.connected_count()}/{self.mcp.total_count()} connected · "
             f"tools: {self._enabled_tool_count()}",
             f"skills: {self.skills.active_count()} active",
+            f"browser: selenium=OK · playwright={pw}",
+            f"jobs: {running_jobs} running / {len(bg_jobs)} total (/jobs)",
             f"rules: {len(rules_util.load(os.getcwd()))} file(s) loaded",
             f"sessions: {len(session_util.list_sessions(os.getcwd(), 5))} saved · "
             f"auto-checkpoint: {'on' if self.checkpoint_enabled else 'off'}",
