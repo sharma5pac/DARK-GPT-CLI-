@@ -313,7 +313,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "lsp_diagnostics", "description": "Get type/compile diagnostics (errors, warnings) for a file from the language server or project compiler", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
             {"type": "function", "function": {"name": "lsp_rename", "description": "Semantic rename across the workspace using LSP. Preview by default; pass apply=true to write changes", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}, "new_name": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "apply": {"type": "boolean"}}, "required": ["path", "symbol", "new_name"]}}},
             {"type": "function", "function": {"name": "delegate", "description": "Spawn an isolated read-only subagent (explore/review/test) to work on a focused task in parallel; returns a concise report", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
-            {"type": "function", "function": {"name": "script", "description": "Write and RUN a Python or bash helper script for bulk edits, generation, analysis or automation. The script is saved under ~/.cache/darkgpt/scripts and kept as evidence. Use this for work too large for a single edit/patch. Returns exit_code, output and the script path.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer"}}, "required": ["language", "code"]}}},
+            {"type": "function", "function": {"name": "script", "description": "PREFERRED for speed: write and RUN a Python or bash helper script in one call. Use this first for recon/enumeration/fuzzing/parsing/bulk checks/multi-step automation/report building/data transforms—anything that would take multiple shell/read/grep/browser calls. Scripts are faster, repeatable, and saved as evidence under ~/.cache/darkgpt/scripts. Return exit_code, output, script_path. Use python for parsing/HTTP/JSON/logic; bash for quick CLI pipelines. Keep scripts focused; print clear findings.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string", "description": "Complete runnable script. Include imports/shebang assumptions as needed; print actionable output."}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds, default 30, max 120."}}, "required": ["language", "code"]}}},
             # ---- Cline-compatible built-in tools ---------------------------------
             {"type": "function", "function": {"name": "read_files", "description": "Cline-style batch file reader. Read several files (or line ranges) in one call. Accepts a path string, an array of paths, or {files:[{path,start_line,end_line}]} (also paths/file_paths). Line numbers are 1-based and inclusive.", "parameters": {"type": "object", "properties": {"files": {"description": "Path string, array of paths, or array of objects with path and optional 1-based inclusive start_line/end_line."}}, "required": ["files"]}}},
             {"type": "function", "function": {"name": "search_codebase", "description": "Cline-style batch codebase search. Run several grep extended-regex queries at once and return per-query matches with file:line. Prefer this over many separate grep calls.", "parameters": {"type": "object", "properties": {"queries": {"description": "A regex string or array of regex strings to search for."}}, "required": ["queries"]}}},
@@ -994,9 +994,15 @@ HOW YOU THINK
   files it touches, and the check that will prove it. Keep the work atomic.
 - Prefer precise, semantic edits (lsp_rename with apply=false first, apply=true
   second; edit and patch for exact changes) over rewriting whole files.
-- When a job is too large or repetitive for one edit, author a real helper script
-  with the script tool (python or bash). It is written to disk, executed, and kept
-  as evidence. Use it for bulk refactors, generators, data extraction and harnesses.
+- **SCRIPT-FIRST FOR SPEED:** For recon, enumeration, crawling/parsing, API probing,
+  fuzzing loops, log/output parsing, JSON/HTML extraction, bulk checks, multi-step
+  automation, or any task that would take 3+ separate tool calls, prefer the `script`
+  tool (python or bash). Write a small runnable script, execute it, and use the output.
+  Scripts are faster, repeatable, easier to debug, and kept as evidence under
+  ~/.cache/darkgpt/scripts. Use Python for HTTP/JSON/HTML/regex/stateful logic; bash
+  for quick CLI pipelines. Do not do slow manual step-by-step when a script can do it.
+- Use shell/run_commands for quick one-offs; use browser for JS-rendered interaction;
+  use script when you need control flow, parsing, retries, or many targets.
 - Use delegate (or spawn_agent) to parallelise independent exploration, review and
   test analysis. Workers are read-only; you remain the brain that decides.
 - Batch when you can: read_files for several files/ranges, search_codebase for
@@ -1021,22 +1027,18 @@ HOW YOU THINK
 HOW YOU GET WHAT YOU NEED (DO NOT STOP AT THE FIRST FAILURE)
 - The goal is the *outcome*, not one tool call. If a route fails, change the route
   and keep going. Never report "could not" while an untried method remains.
-- For web work, escalate through distinct methods in this order and keep a
-  short mental note of what you already tried:
-  1. fetch_web_content for the plain URL (try alternate URL forms, http/https,
-     trailing slash, /index, canonical and cached mirrors).
-  2. web_search to find the same fact from another source or a snippet of it.
-  3. browser with real actions when the page is JS-rendered, blocks plain
-     fetches, needs a form/click/scroll/login, or returned 403/429/empty text.
-     Batch navigate -> wait -> extract in one call; reuse the same `session`
-     so cookies carry over. If Playwright fails, the tool falls back to
-     Selenium automatically — do not give up because of one engine error.
-  4. MCP web/fuzz tools (kala-mcp-root: ffuf, dirb, wfuzz, urlcrazy, parsero)
-     and shell (curl with different headers/user-agent, known APIs, alternate
-     endpoints, archived/public mirrors) for endpoints that hide behind auth
-     or unusual paths.
-  5. delegate/spawn_agent to have a read-only worker try an independent route
-     while you continue the main line of attack.
+- For web/pentest work, pick the fastest reliable route. **Script-first when practical:**
+  1. `script` (python/bash) for fast repeatable checks: HTTP probes, header/endpoint
+     enumeration, parsing responses, JSON/HTML extraction, auth flow testing, bulk
+     target iteration, generating payload lists, correlating outputs. Prefer this over
+     many manual shell/browser calls when control flow or parsing is needed.
+  2. `fetch_web_content` or curl/shell for simple single fetches.
+  3. `browser` for JS-rendered pages, forms/clicks/sessions, screenshots, or when
+     static fetch misses content. Batch actions in one call; reuse session.
+  4. MCP/web-fuzz tools (kala-mcp-root: ffuf, dirb, wfuzz, urlcrazy, parsero, etc.)
+     for specialized scanning/fuzzing when available.
+  5. `delegate`/`spawn_agent` for independent parallel routes.
+  Keep a short note of what you tried; change route on failure.
 - Treat every failure as information: read the status/error, then change exactly
   one thing — URL, headers, engine, selector, session state, or whole method.
   A 404 is not "done"; it is a signal to search, fuzz or use the browser.
