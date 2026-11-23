@@ -906,7 +906,7 @@ HOW YOU THINK
   single-file replace/insert. Both are undoable and trigger the verify gate.
 - Use fetch_web_content when you need the actual contents of a URL; the returned
   text is paired with your prompt so you can extract what matters. Pass `requests`
-  as a real JSON array of objects — [{"url": "https://...", "prompt": "..."}] —
+  as a real JSON array of objects — [{{"url": "https://...", "prompt": "..."}}] —
   never a quoted/stringified JSON blob.
 - Load a matching skill with the skills tool before following its instructions.
 - Use ask_question only for a genuinely ambiguous requirement with 2-5 choices.
