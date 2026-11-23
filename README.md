@@ -12,6 +12,10 @@
 
 [Quickstart](#-quickstart) · [Features](#-what-makes-it-different) · [Security Mode](#-security--recon-mode) · [Commands](#-command-cheatsheet) · [Contributing](#-contributing)
 
+<br/>
+
+![DarkGPT TUI](assets/shallom.png)
+
 </div>
 
 ---
