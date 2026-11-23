@@ -308,10 +308,19 @@ PhaseTimeline {
     height: auto;
 }
 
-Markdown {
+ChatMessage Markdown, .msg-assistant Markdown {
     background: transparent;
     margin: 0;
-    padding: 0;
+    padding: 0 1;
+    height: auto;
+}
+
+ChatMessage {
+    height: auto;
+}
+
+ChatMessage Static {
+    height: auto;
 }
 
 /* ----------------------------------------------------------------- modals */

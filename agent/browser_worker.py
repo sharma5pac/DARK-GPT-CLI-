@@ -86,6 +86,9 @@ def _run_selenium(job: Dict[str, Any], steps: List[Dict[str, Any]], out: Dict[st
     options.binary_location = shutil.which("chromium") or shutil.which("google-chrome") or "/usr/bin/chromium"
     if job.get("headless", True):
         options.add_argument("--headless=new")
+    proxy = str(job.get("proxy") or "").strip()
+    if proxy:
+        options.add_argument(f"--proxy-server={proxy}")
     for flag in ("--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1440,1100"):
         options.add_argument(flag)
     driver_path = shutil.which("chromedriver") or "/usr/bin/chromedriver"
@@ -239,11 +242,18 @@ def _run_playwright(job: Dict[str, Any], steps: List[Dict[str, Any]], out: Dict[
         if __import__("os").path.exists(chrome):
             launch["executable_path"] = chrome
         launch["args"] = ["--no-sandbox", "--disable-dev-shm-usage"]
+        proxy = str(job.get("proxy") or "").strip()
+        if proxy:
+            launch["proxy"] = {"server": proxy}
         browser = p.chromium.launch(**launch)
-        context = browser.new_context(
-            storage_state=job.get("storage") or None,
-            viewport={"width": 1440, "height": 1100},
-        )
+        ctx_kwargs: Dict[str, Any] = {
+            "storage_state": job.get("storage") or None,
+            "viewport": {"width": 1440, "height": 1100},
+        }
+        headers = job.get("headers") or {}
+        if isinstance(headers, dict) and headers:
+            ctx_kwargs["extra_http_headers"] = {str(k): str(v) for k, v in headers.items()}
+        context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
         nav_timeout = max(20, int(job.get("nav_timeout", 120)))
         page.set_default_timeout(nav_timeout * 1000)

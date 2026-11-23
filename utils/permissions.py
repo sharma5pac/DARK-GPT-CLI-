@@ -29,6 +29,8 @@ READ_ONLY = {
     "skills", "ask_question", "submit_and_exit",
     # Target graph/reporting (write to ~/.config/darkgpt, not workspace)
     "knowledge_graph", "evidence_log", "report_generate", "recon_orchestrate",
+    "planner_update", "task_list", "task_wait", "task_log",
+    "auth_vault", "proxy_control", "source_index", "blackboard", "attack_paths",
 }
 WRITE_TOOLS = {
     "write", "edit", "patch", "rename", "lsp_rename",
@@ -96,6 +98,18 @@ def risk_of(tool: str, args: Dict[str, Any] | None = None) -> str:
         return "write"
     if tool in ("task_list", "task_wait", "task_log"):
         return "safe"
+    if tool == "http_request":
+        return "shell"  # network-active; can mutate remote state
+    if tool == "oracle_validate":
+        return "shell"  # makes network requests
+    if tool == "verify_findings":
+        return "shell"  # executes replay scripts
+    if tool == "proxy_control":
+        action = str(args.get("action") or "").lower()
+        return "shell" if action in ("start", "stop", "replay") else "safe"
+    if tool == "source_index":
+        action = str(args.get("action") or "").lower()
+        return "shell" if action == "fetch_js" else "safe"
     if tool in WRITE_TOOLS:
         # lsp_rename preview writes nothing.
         if tool == "lsp_rename" and not args.get("apply"):
@@ -182,6 +196,17 @@ def describe(tool: str, args: Dict[str, Any] | None, risk: str) -> str:
     if tool == "fetch_web_content":
         urls = [str(r.get("url")) for r in _listify(args.get("requests")) if isinstance(r, dict)]
         return f"Fetch web content ({risk}):\n" + "\n".join(urls)[:500]
+    if tool == "http_request":
+        prof = f" auth_profile={args.get('auth_profile')}" if args.get('auth_profile') else ""
+        return f"HTTP request ({risk}):\n{str(args.get('method') or 'GET').upper()} {str(args.get('url') or '')[:400]}{prof}"
+    if tool == "oracle_validate":
+        return f"Oracle validation ({risk}):\n{args.get('kind')} {args.get('url') or args.get('url_a') or ''}"
+    if tool == "verify_findings":
+        return f"Verify/replay findings ({risk}):\n{args.get('action')} {args.get('finding') or ''}"
+    if tool == "proxy_control":
+        return f"Proxy control ({risk}):\n{args.get('action')} target={args.get('target') or ''} port={args.get('port') or ''}"
+    if tool == "source_index":
+        return f"Source index ({risk}):\n{args.get('action')} {args.get('url') or args.get('paths') or ''}"
     if tool.startswith("mcp__"):
         return f"Call MCP tool ({risk}):\n{tool}"
     return f"Use {tool} ({risk})"

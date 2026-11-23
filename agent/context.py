@@ -192,6 +192,16 @@ def system_extras(
                 lines.append(f"- obs: {str(o.get('observed',''))[:100]} | delta: {str(o.get('hypothesis_delta',''))[:80]} | next: {str(o.get('next_action',''))[:80]}")
             for d in (p.get("dead_ends") or [])[-3:]:
                 lines.append(f"- dead_end: {str(d.get('signature',''))[:80]} -> pivot: {str(d.get('pivot',''))[:80]}")
+            try:
+                from agent import blackboard as bb
+                bbs = bb.summary(target)
+                recent = bbs.get("recent", [])
+                if recent:
+                    lines.append("Blackboard:")
+                    for it in recent[:4]:
+                        lines.append(f"- [{it.get('kind')}/{it.get('status')}] {str(it.get('text',''))[:120]}")
+            except Exception:
+                pass
             parts.append("Target state (dynamic memory — update it as you learn):\n" + "\n".join(lines))
     except Exception:
         pass

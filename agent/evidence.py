@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -69,6 +70,7 @@ def record(
     ok: bool = True,
     source: str = "agent",
     tags: Optional[List[str]] = None,
+    artifact: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     path = evidence_path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +90,8 @@ def record(
         "result_sha256": digest,
         "result_bytes": len(result_text.encode("utf-8", "replace")),
     }
+    if isinstance(artifact, dict) and artifact:
+        entry["artifact"] = _redact(artifact)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return entry
@@ -135,22 +139,6 @@ def get_by_ref(target: str, ref: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def read_entries(target: str, limit: int = 200) -> List[Dict[str, Any]]:
-    path = evidence_path(target)
-    if not path.exists():
-        return []
-    # Read tail efficiently enough for typical ledgers; keep simple.
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
-        return []
-    out = []
-    for line in lines[-max(0, limit):]:
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out
 
 
 def summary(target: str) -> Dict[str, Any]:
@@ -171,3 +159,23 @@ def summary(target: str) -> Dict[str, Any]:
         "by_tool": dict(sorted(by_tool.items(), key=lambda kv: kv[1], reverse=True)[:30]),
         "last_ts": entries[-1]["ts"] if entries else None,
     }
+
+def save_repro_artifact(target: str, finding_id: str, content: str, kind: str = "py") -> Dict[str, Any]:
+    """Save a deterministic replay script for a finding. Never overwrites silently; versioned."""
+    from agent import knowledge_graph as kg
+    d = kg.target_dir(target) / "repro"
+    d.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", finding_id)[:80] or "finding"
+    ext = ".py" if kind == "py" else ".sh"
+    base = d / f"{safe}{ext}"
+    path = base
+    i = 2
+    while path.exists():
+        path = d / f"{safe}_v{i}{ext}"
+        i += 1
+    path.write_text(content, encoding="utf-8")
+    try:
+        os.chmod(path, 0o700)
+    except Exception:
+        pass
+    return {"ok": True, "path": str(path), "sha256": sha256_text(content), "bytes": len(content.encode("utf-8", "replace"))}

@@ -115,16 +115,32 @@ def upsert_node(
     return node
 
 
-def add_edge(target: str, src_key: str, dst_key: str, rel: str) -> None:
+def add_edge(target: str, src_key: str, dst_key: str, rel: str, *, created_by: str = "", evidence_id: str = "", confidence: Any = None, meta: Optional[Dict[str, Any]] = None) -> None:
     graph = _load(target)
     if src_key not in graph["nodes"] or dst_key not in graph["nodes"]:
         return
-    edge = {"src": src_key, "dst": dst_key, "rel": rel}
     for e in graph.get("edges", []):
         if e.get("src") == src_key and e.get("dst") == dst_key and e.get("rel") == rel:
+            # enrich provenance without duplicating edge
+            if created_by and created_by not in (e.get("created_by") or []):
+                e.setdefault("created_by", []).append(created_by)
+                e["created_by"] = e["created_by"][-10:]
+            if evidence_id and evidence_id not in (e.get("evidence_ids") or []):
+                e.setdefault("evidence_ids", []).append(evidence_id)
+                e["evidence_ids"] = e["evidence_ids"][-20:]
+            if confidence is not None:
+                e["confidence"] = confidence
+            if meta:
+                e.setdefault("meta", {}).update({k: v for k, v in meta.items() if v not in (None, "", [], {})})
+            _save(target, graph)
             return
-    graph.setdefault("edges", []).append({**edge, "ts": _now()})
-    graph["edges"] = graph["edges"][-2000:]
+    edge = {"src": src_key, "dst": dst_key, "rel": rel, "ts": _now()}
+    if created_by: edge["created_by"] = [created_by]
+    if evidence_id: edge["evidence_ids"] = [evidence_id]
+    if confidence is not None: edge["confidence"] = confidence
+    if meta: edge["meta"] = dict(meta)
+    graph.setdefault("edges", []).append(edge)
+    graph["edges"] = graph["edges"][-4000:]
     _save(target, graph)
 
 
@@ -136,7 +152,7 @@ def add_service(target: str, host: str, port: Any, proto: str = "tcp", attrs: Op
     identity = f"{host}:{port}/{proto}"
     svc = upsert_node(target, "service", identity, {"host": host, "port": int(port), "proto": proto, **(attrs or {})}, source=source)
     h = add_host(target, host, source=source)
-    add_edge(target, h["key"], svc["key"], "has_service")
+    add_edge(target, h["key"], svc["key"], "has_service", created_by=source or "kg")
     return svc
 
 
@@ -203,7 +219,7 @@ def add_auth_state(target: str, host: str, state: str, attrs: Optional[Dict[str,
     identity = f"{host}:{state}"
     node = upsert_node(target, "auth_state", identity, {"host": host, "state": state, **(attrs or {})}, source=source)
     h = add_host(target, host, source=source)
-    add_edge(target, h["key"], node["key"], "has_auth_state")
+    add_edge(target, h["key"], node["key"], "has_auth_state", created_by=source or "kg")
     return node
 
 
@@ -211,7 +227,7 @@ def add_param(target: str, endpoint: str, name: str, location: str = "query", at
     identity = f"{endpoint}:{location}:{name}"
     node = upsert_node(target, "param", identity, {"endpoint": endpoint, "name": name, "location": location, **(attrs or {})}, source=source)
     ep = add_endpoint(target, endpoint, source=source)
-    add_edge(target, ep["key"], node["key"], "has_param")
+    add_edge(target, ep["key"], node["key"], "has_param", created_by=source or "kg")
     return node
 
 
@@ -236,10 +252,12 @@ def add_finding(
     if sev not in SEVERITY_ORDER:
         sev = "info"
     evidence_ref = str(evidence_ref or a.get("evidence_ref") or "").strip()
-    if status == "proved" and not _evidence_ref_exists(target, evidence_ref):
-        # proof gate: never mark proved without evidence ref present in ledger
+    oracle_ref = str(a.get("oracle_ref") or "").strip()
+    oracle_verified = bool(a.get("oracle_verified")) or str(a.get("oracle_verdict") or "").lower() in {"different","reflected","potential_delay","confirmed","verified"}
+    if status == "proved" and not _evidence_ref_exists(target, evidence_ref) and not (oracle_ref and oracle_verified):
+        # proof gate: proved requires evidence ref or verified machine oracle
         a["proof_gate_blocked"] = True
-        a["proof_gate_reason"] = "proved status requires evidence_ref present in evidence ledger"
+        a["proof_gate_reason"] = "proved status requires evidence_ref in ledger or verified oracle_ref+oracle_verified"
         status = "attempted"
     a["status"] = status
     a["severity"] = sev
@@ -382,3 +400,74 @@ def export_graph(target: str, fmt: str = "json") -> Dict[str, Any]:
         out.write_text(dot, encoding="utf-8")
         return {"format": "dot", "path": str(out), "bytes": len(dot.encode("utf-8"))}
     raise ValueError("format must be json or dot/graphviz")
+
+
+# ----------------------------------------------------------------- attack paths
+HIGH_VALUE_KINDS = {"credential", "auth_state", "finding"}
+HIGH_VALUE_TERMS = ("admin", "root", "token", "secret", "aws", "s3", "bucket", "db", "database", "internal", "prod", "backup")
+
+
+def _node_label(n: Dict[str, Any]) -> str:
+    a = n.get("attrs") or {}
+    return str(a.get("title") or a.get("url") or a.get("host") or a.get("name") or n.get("id") or n.get("key"))
+
+
+def _is_high_value(n: Dict[str, Any]) -> bool:
+    kind = str(n.get("kind") or "")
+    if kind in HIGH_VALUE_KINDS:
+        sev = str((n.get("attrs") or {}).get("severity") or "").lower()
+        if kind == "finding" and sev not in ("critical", "high", "medium"):
+            pass
+        else:
+            return True
+    hay = json.dumps(n.get("attrs") or {}, ensure_ascii=False).lower()
+    return any(t in hay for t in HIGH_VALUE_TERMS)
+
+
+def rank_attack_paths(target: str, max_paths: int = 10, max_depth: int = 5) -> List[Dict[str, Any]]:
+    """Rank simple multi-hop paths toward high-value nodes by heuristic impact."""
+    graph = _load(target)
+    nodes = graph.get("nodes") or {}
+    edges = graph.get("edges") or []
+    adj: Dict[str, List[Dict[str, Any]]] = {}
+    for e in edges:
+        adj.setdefault(str(e.get("src")), []).append(e)
+    sources = [k for k, n in nodes.items() if str(n.get("kind")) in ("host", "endpoint", "service", "finding")]
+    high = {k for k, n in nodes.items() if _is_high_value(n)}
+    paths: List[Dict[str, Any]] = []
+    for src in sources[:120]:
+        stack = [(src, [src], [])]
+        seen = set([src])
+        while stack:
+            cur, node_path, edge_path = stack.pop()
+            if len(node_path) > 1 and cur in high:
+                score = 0.0
+                for nk in node_path:
+                    n = nodes.get(nk, {})
+                    kind = str(n.get("kind"))
+                    a = n.get("attrs") or {}
+                    sev = str(a.get("severity") or "").lower()
+                    score += {"finding": 3, "credential": 4, "auth_state": 3, "endpoint": 1.5, "service": 1, "host": 0.5, "param": 1, "sink": 2}.get(kind, 0.5)
+                    score += {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(sev, 0)
+                    if _is_high_value(n): score += 2
+                score += max(0, 2 - 0.2 * len(node_path))
+                paths.append({
+                    "score": round(score, 2),
+                    "nodes": [ {"key": k, "kind": nodes.get(k,{}).get("kind"), "label": _node_label(nodes.get(k,{})), "id": nodes.get(k,{}).get("id")} for k in node_path ],
+                    "edges": edge_path[-20:],
+                })
+                continue
+            if len(node_path) >= max_depth:
+                continue
+            for e in adj.get(cur, [])[:30]:
+                dst = str(e.get("dst"))
+                if dst in node_path: continue
+                stack.append((dst, node_path + [dst], edge_path + [{"src": e.get("src"), "dst": e.get("dst"), "rel": e.get("rel"), "created_by": e.get("created_by", []), "evidence_ids": e.get("evidence_ids", []), "confidence": e.get("confidence")}]))
+    # dedupe by node sequence
+    uniq = {}
+    for p in paths:
+        k = ">".join(n.get("key","") for n in p["nodes"])
+        if k not in uniq or p["score"] > uniq[k]["score"]:
+            uniq[k] = p
+    ranked = sorted(uniq.values(), key=lambda x: x["score"], reverse=True)[:max_paths]
+    return ranked

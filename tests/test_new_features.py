@@ -4,17 +4,19 @@ from agent.jobs import JobManager
 from agent.browser import run as browser_run
 
 
-async def test_jobs():
-    jm = JobManager()
-    a = await jm.start_shell('echo hello-job')
-    b = await jm.start_script('python', 'print("pyjob")')
-    w = await jm.wait([a['job']['id'], b['job']['id']], timeout=20)
-    assert w['ok'] and w['done']
-    by = {j['id']: j for j in w['jobs']}
-    assert 'hello-job' in by[a['job']['id']]['output']
-    assert 'pyjob' in by[b['job']['id']]['output']
-    assert jm.log(a['job']['id'])['ok']
-    print('PASS jobs')
+def test_jobs():
+    async def _run():
+        jm = JobManager()
+        a = await jm.start_shell('echo hello-job')
+        b = await jm.start_script('python', 'print("pyjob")')
+        w = await jm.wait([a['job']['id'], b['job']['id']], timeout=20)
+        assert w['ok'] and w['done']
+        by = {j['id']: j for j in w['jobs']}
+        assert 'hello-job' in by[a['job']['id']]['output']
+        assert 'pyjob' in by[b['job']['id']]['output']
+        assert jm.log(a['job']['id'])['ok']
+        print('PASS jobs')
+    asyncio.run(_run())
 
 
 def test_browser_norm_crawl():
@@ -36,7 +38,7 @@ def test_budget_defaults():
 
 
 def main():
-    asyncio.run(test_jobs())
+    test_jobs()
     test_browser_norm_crawl()
     test_budget_defaults()
     print('ALL NEW FEATURE TESTS PASSED')

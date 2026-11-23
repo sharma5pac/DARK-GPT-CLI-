@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -52,6 +53,10 @@ from agent import (
     routing,
     skills as skills_util,
     subagents,
+    tool_parsers,
+    auth_vault,
+    source_correlation,
+    proxy as proxy_util,
 )
 from agent.jobs import JobManager
 
@@ -291,6 +296,8 @@ class ToolRegistry:
         self.ask_callback = ask_callback
         self.approved: set[str] = set()
         self.jobs = JobManager()
+        self.proxy = proxy_util.ProxyManager()
+        self._telemetry: Dict[str, Any] = {"tool_calls": 0, "llm_calls": 0, "input_chars": 0, "output_chars": 0}
 
     def local_specs(self) -> List[Dict[str, Any]]:
         return [
@@ -321,7 +328,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "search_codebase", "description": "Cline-style batch codebase search. Run several grep extended-regex queries at once and return per-query matches with file:line. Prefer this over many separate grep calls.", "parameters": {"type": "object", "properties": {"queries": {"description": "A regex string or array of regex strings to search for."}}, "required": ["queries"]}}},
             {"type": "function", "function": {"name": "run_commands", "description": "Cline-style batch shell runner. Execute several independent bash commands in one call, each with its own exit code, output and duration. Use for parallel investigation; use shell for a single streaming command.", "parameters": {"type": "object", "properties": {"commands": {"description": "A command string, array of command strings, or objects {command,args}."}}, "required": ["commands"]}}},
             {"type": "function", "function": {"name": "fetch_web_content", "description": "Cline-style web fetch. Download one or more URLs and return cleaned readable text. Each request carries a prompt; the returned text plus that prompt is what you analyse, so state what you need extracted.", "parameters": {"type": "object", "properties": {"requests": {"description": "Object {url,prompt} or array of such objects. http:// and https:// only."}}, "required": ["requests"]}}},
-            {"type": "function", "function": {"name": "browser", "description": "Real browser automation/crawling (Playwright with automatic Selenium fallback). No manual scripting: pass high-level actions; get structured results. Actions: navigate {url}, fill {selector,value}, click {selector|text|xpath}, extract {selector,mode=text|html|attr|links|title,attr,all,limit}, crawl/rank/search {query,limit,include_text} (extracts & ranks page links for a goal), screenshot {path}, scroll {direction|pixels}, wait {selector|ms}, back, cookies, js {script}. Accepts shorthand action shapes too. Use session for persisted cookies/logins. Use for JS-heavy sites, forms, clicking, crawling, or when fetch_web_content failed. If browser times out, pivot to fetch_web_content/curl and report what was learned.", "parameters": {"type": "object", "properties": {"actions": {"description": "A single action object or an array of action objects, executed in order in one browser session."}, "session": {"type": "string", "description": "Session name for persisted cookies/state (default 'default')."}, "engine": {"type": "string", "enum": ["auto", "playwright", "selenium"], "description": "auto tries Playwright then Selenium; use selenium if playwright is flaky."}, "timeout": {"type": "integer", "description": "Overall timeout in seconds (default 120, clamped 45-180)."}}, "required": ["actions"]}}},
+            {"type": "function", "function": {"name": "browser", "description": "Real browser automation/crawling (Playwright with automatic Selenium fallback). No manual scripting: pass high-level actions; get structured results. Actions: navigate {url}, fill {selector,value}, click {selector|text|xpath}, extract {selector,mode=text|html|attr|links|title,attr,all,limit}, crawl/rank/search {query,limit,include_text} (extracts & ranks page links for a goal), screenshot {path}, scroll {direction|pixels}, wait {selector|ms}, back, cookies, js {script}. Accepts shorthand action shapes too. Use session for persisted cookies/logins. Use auth_profile for vault-injected session, use_proxy/proxy for interception replay. Use for JS-heavy sites, forms, clicking, crawling, or when fetch_web_content failed. If browser times out, pivot to fetch_web_content/curl and report what was learned.", "parameters": {"type": "object", "properties": {"actions": {"description": "A single action object or an array of action objects, executed in order in one browser session."}, "session": {"type": "string", "description": "Session name for persisted cookies/state (default 'default')."}, "engine": {"type": "string", "enum": ["auto", "playwright", "selenium"], "description": "auto tries Playwright then Selenium; use selenium if playwright is flaky."}, "timeout": {"type": "integer", "description": "Overall timeout in seconds (default 120, clamped 45-180)."}, "auth_profile": {"type": "string", "description": "Vault auth profile name to inject cookies/headers at runtime."}, "use_proxy": {"type": "boolean", "description": "Route through running DarkGPT proxy."}, "proxy": {"type": "string", "description": "Explicit proxy URL, e.g. http://127.0.0.1:8080."}, "headers": {"type": "object"}, "cookies": {"type": "array"}}, "required": ["actions"]}}},
             {"type": "function", "function": {"name": "apply_patch", "description": "Cline-style patch tool. Apply a *** Begin Patch / *** End Patch block supporting *** Update File:, *** Add File:, *** Delete File:, *** Move to: and @@ hunks with context/-/+ lines. Validates every file before writing, then returns per-file diffs. Best choice for multi-file edits.", "parameters": {"type": "object", "properties": {"input": {"type": "string", "description": "The full patch text, including *** Begin Patch and *** End Patch."}}, "required": ["input"]}}},
             {"type": "function", "function": {"name": "editor", "description": "Cline-style single-file editor. Replace old_text with new_text (first occurrence), or insert new_text at insert_line (1-based, inserted before that line; append when beyond EOF). Returns a unified diff.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "new_text": {"type": "string"}, "old_text": {"type": "string"}, "insert_line": {"type": "integer"}}, "required": ["path", "new_text"]}}},
             {"type": "function", "function": {"name": "skills", "description": "Cline-style skill invocation. Load the full instructions of a configured DarkGPT skill by name and follow them for the current task. Use it when a skill matches the work; args may pass a short focus.", "parameters": {"type": "object", "properties": {"skill": {"type": "string", "description": "Skill name (exact, or case-insensitive match)."}, "args": {"type": "string", "description": "Optional focus or arguments."}}, "required": ["skill"]}}},
@@ -338,6 +345,14 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "task_wait", "description": "Wait for one or more background task IDs to finish (or timeout). Returns their status and tail output. Use after firing parallel tasks.", "parameters": {"type": "object", "properties": {"job_ids": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds to wait, default 30, max 300."}}, "required": ["job_ids"]}}},
             {"type": "function", "function": {"name": "task_log", "description": "Get tail output/log for a background task.", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}, "tail": {"type": "integer"}}, "required": ["job_id"]}}},
             {"type": "function", "function": {"name": "task_kill", "description": "Kill a running background task.", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]}}},
+            {"type": "function", "function": {"name": "http_request", "description": "Make an HTTP request through the DarkGPT harness (not raw model context). Supports named auth profiles from the vault, optional proxy routing, timeout, and response normalization. Raw secrets are injected at runtime and never returned. Use for replay/fuzz/auth-swap without re-crawling.", "parameters": {"type": "object", "properties": {"method": {"type": "string"}, "url": {"type": "string"}, "headers": {"type": "object"}, "params": {"type": "object"}, "data": {}, "json": {}, "auth_profile": {"type": "string", "description": "Named vault profile to inject (headers/cookies/token)."}, "session": {"type": "string"}, "timeout": {"type": "integer"}, "allow_redirects": {"type": "boolean"}, "proxy": {"type": "boolean", "description": "Route through local DarkGPT proxy if running."}, "target": {"type": "string"}}, "required": ["url"]}}},
+            {"type": "function", "function": {"name": "auth_vault", "description": "Manage named auth/session profiles outside LLM context. Actions: list,get,set,delete,inject_preview. get/inject_preview never return raw secrets, only redacted metadata. Use before http_request/browser auth swaps.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "get", "set", "delete", "inject_preview"]}, "target": {"type": "string"}, "name": {"type": "string"}, "profile": {"type": "object", "description": "For set: may include authorization/bearer/token/cookies/cookie/headers/notes. Secrets stored locally, redacted in output."}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "proxy_control", "description": "Control local HTTP interception proxy (mitmdump bridge). Captures flows for replay/fuzz and can import to knowledge graph. Actions: start,stop,status,import,replay. Additive; direct mode still works if proxy unavailable.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "stop", "status", "import", "replay"]}, "target": {"type": "string"}, "port": {"type": "integer"}, "limit": {"type": "integer"}, "url": {"type": "string"}, "auth_profile": {"type": "string"}, "match": {"type": "string", "description": "For replay: substring/url/method filter"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "source_index", "description": "White-box/source-to-sink correlation. Index local source files/directories or fetched JS bundles, extract endpoints/params/sinks, and link them into the target knowledge graph. Use before dynamic probes to turn blind fuzzing into targeted validation.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["index_paths", "fetch_js"]}, "target": {"type": "string"}, "paths": {"type": "array", "items": {"type": "string"}}, "url": {"type": "string"}, "base_url": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "blackboard", "description": "Shared blackboard for multi-agent coordination. Post/read Facts, Intents, and Human Hints; workers can claim/resolve asynchronously. Actions: post,list,claim,resolve,summary.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["post", "list", "claim", "resolve", "summary"]}, "target": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "intent", "hint"]}, "text": {"type": "string"}, "status": {"type": "string"}, "id": {"type": "string"}, "owner": {"type": "string"}, "note": {"type": "string"}, "refs": {"type": "array", "items": {"type": "string"}}, "confidence": {}, "limit": {"type": "integer"}, "meta": {"type": "object"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "oracle_validate", "description": "Machine oracle validation. Treat scanner/LLM claims as untrusted until deterministic oracle verifies side effect. Kinds: differential_response, timing_delta, reflection_check, oast/interactsh (requires external listener).", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["differential_response", "timing_delta", "reflection_check", "oast", "interactsh", "callback"]}, "url": {"type": "string"}, "url_a": {"type": "string"}, "url_b": {"type": "string"}, "baseline_url": {"type": "string"}, "marker": {"type": "string"}, "samples": {"type": "integer"}, "headers": {"type": "object"}, "auth_profile": {"type": "string"}, "target": {"type": "string"}}, "required": ["kind"]}}},
+            {"type": "function", "function": {"name": "attack_paths", "description": "Rank multi-hop attack paths in the target knowledge graph toward high-value assets. Uses edge provenance and node severity/value heuristics.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "max_paths": {"type": "integer"}, "max_depth": {"type": "integer"}}, "required": []}}},
+            {"type": "function", "function": {"name": "verify_findings", "description": "Deterministic replay verification for findings with repro artifacts. Runs stored repro scripts/commands in controlled mode and marks findings still_vulnerable/fixed/error. Actions: list,save_repro,replay,replay_all.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "save_repro", "replay", "replay_all"]}, "target": {"type": "string"}, "finding": {"type": "string", "description": "Finding id/title/key fragment"}, "content": {"type": "string", "description": "For save_repro: script content"}, "kind": {"type": "string", "enum": ["py", "sh"]}, "limit": {"type": "integer"}, "timeout": {"type": "integer"}}, "required": ["action"]}}},
         ]
 
     def specs(self) -> List[Dict[str, Any]]:
@@ -505,6 +520,22 @@ class ToolRegistry:
                 return clamp(json.dumps(self.jobs.log(str(args.get("job_id") or ""), tail=int(args.get("tail", 4000))), ensure_ascii=False))
             if name == "task_kill":
                 return clamp(json.dumps(await self.jobs.kill(str(args.get("job_id") or "")), ensure_ascii=False))
+            if name == "http_request":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_http_request, args), ensure_ascii=False))
+            if name == "auth_vault":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_auth_vault, args), ensure_ascii=False))
+            if name == "proxy_control":
+                return clamp(json.dumps(await self._run_proxy_control(args), ensure_ascii=False))
+            if name == "source_index":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_source_index, args), ensure_ascii=False))
+            if name == "blackboard":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_blackboard, args), ensure_ascii=False))
+            if name == "oracle_validate":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_oracle, args), ensure_ascii=False))
+            if name == "attack_paths":
+                return clamp(json.dumps(await asyncio.to_thread(self._run_attack_paths, args), ensure_ascii=False))
+            if name == "verify_findings":
+                return clamp(json.dumps(await self._run_verify_findings(args), ensure_ascii=False))
             if name.startswith("mcp__"):
                 _, server, tool = name.split("__", 2)
                 if not self.mcp:
@@ -661,12 +692,16 @@ class ToolRegistry:
         return str(appconfig.get("active_target") or "").strip()
 
     def _merge_subagent_into_target(self, target: str, result: Any) -> Dict[str, int]:
-        """Merge structured subagent output into KG with light dedupe."""
+        """Merge structured subagent output into KG with light dedupe and provenance."""
         parsed = getattr(result, "parsed", None) or {}
         role = getattr(result, "role", "")
-        imported = {"hosts": 0, "services": 0, "endpoints": 0, "findings": 0}
+        imported = {"hosts": 0, "services": 0, "endpoints": 0, "findings": 0, "intents": 0}
         if not isinstance(parsed, dict):
             return imported
+        try:
+            from agent import blackboard as bb
+        except Exception:
+            bb = None
         def _dedupe(rows: Any, keys: List[str]) -> List[Dict[str, Any]]:
             seen = set(); out = []
             for r in rows or []:
@@ -680,17 +715,23 @@ class ToolRegistry:
             if host:
                 kg_util.add_host(target, host, {"notes": h.get("notes", "")}, source=f"subagent:{role}")
                 imported["hosts"] += 1
-        for s in _dedupe(parsed.get("services"), ["host", "port", "proto"]):
-            host = str(s.get("host") or "").strip()
-            port = s.get("port")
+        for srow in _dedupe(parsed.get("services"), ["host", "port", "proto"]):
+            host = str(srow.get("host") or "").strip()
+            port = srow.get("port")
             if host and port:
-                kg_util.add_service(target, host, port, str(s.get("proto") or "tcp"), {"name": s.get("name", ""), "notes": s.get("notes", "")}, source=f"subagent:{role}")
+                kg_util.add_service(target, host, port, str(srow.get("proto") or "tcp"), {"name": srow.get("name", ""), "notes": srow.get("notes", "")}, source=f"subagent:{role}")
                 imported["services"] += 1
         for e in _dedupe(parsed.get("endpoints"), ["url"]):
             url = str(e.get("url") or "").strip()
             if url:
                 kg_util.add_endpoint(target, url, {"notes": e.get("notes", ""), "method": e.get("method", ""), "auth": e.get("auth", "")}, source=f"subagent:{role}")
                 imported["endpoints"] += 1
+                if bb:
+                    try:
+                        bb.post(target, "intent", f"Probe endpoint {url} ({e.get('method','')}) from {role}", source=f"subagent:{role}", refs=[url])
+                        imported["intents"] += 1
+                    except Exception:
+                        pass
         findings_src = parsed.get("findings") or parsed.get("validations") or []
         for f in _dedupe(findings_src, ["title", "asset", "severity"]):
             title = str(f.get("title") or "").strip()
@@ -702,9 +743,23 @@ class ToolRegistry:
                 "impact": f.get("impact", ""),
                 "remediation": f.get("remediation", ""),
                 "confidence": f.get("confidence"),
+                "oracle_ref": f.get("oracle_ref", ""),
+                "oracle_verified": bool(f.get("oracle_verified")),
             }
-            kg_util.add_finding(target, title, str(f.get("severity") or "info"), str(f.get("details") or f.get("why") or ""), str(f.get("evidence_ref") or ""), attrs, source=f"subagent:{role}")
+            node = kg_util.add_finding(target, title, str(f.get("severity") or "info"), str(f.get("details") or f.get("why") or ""), str(f.get("evidence_ref") or ""), attrs, source=f"subagent:{role}")
             imported["findings"] += 1
+            if bb:
+                try:
+                    bb.post(target, "fact", f"Finding {title} [{attrs.get('status')}] {attrs.get('asset','')}", source=f"subagent:{role}", refs=[str(node.get('key') or '')])
+                except Exception:
+                    pass
+        next_step = str(parsed.get("next_step") or "").strip()
+        if next_step and bb:
+            try:
+                bb.post(target, "intent", next_step[:500], source=f"subagent:{role}")
+                imported["intents"] += 1
+            except Exception:
+                pass
         if any(imported.values()):
             evidence_util.record(target, tool=f"subagent_merge:{role}", args={"task": str(getattr(result,'task',''))[:200]}, result=json.dumps(imported), ok=True, source="agent", tags=["subagent","merge",role])
         return imported
@@ -843,6 +898,263 @@ class ToolRegistry:
             evidence_util.record(target, tool=f"recon_orchestrate:{r.role}", args={"task": r.task[:200]}, result=r.text or r.error, ok=r.ok, source="recon_orchestrate", tags=["recon", r.role])
         return {"target": target, "workers": workers, "results": [r.to_dict() for r in results], "imported": imported, "graph": kg_util.summary(target)}
 
+    def _run_auth_vault(self, args: Dict[str, Any]) -> Any:
+        a = args or {}
+        target = self._active_target(a)
+        action = str(a.get("action") or "list").strip()
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        name = str(a.get("name") or a.get("profile_name") or "")
+        if action == "list":
+            return auth_vault.list_profiles(target)
+        if action == "get":
+            return auth_vault.get_profile(target, name, include_secrets=False)
+        if action == "set":
+            profile = a.get("profile") if isinstance(a.get("profile"), dict) else {k: v for k, v in a.items() if k not in {"action", "target", "name", "profile_name"}}
+            return auth_vault.set_profile(target, name, profile)
+        if action == "delete":
+            return auth_vault.delete_profile(target, name)
+        if action == "inject_preview":
+            # redacted preview only
+            res = auth_vault.get_profile(target, name, include_secrets=False)
+            if not res.get("ok"):
+                return res
+            prof = res.get("profile") or {}
+            keys = [k for k in prof.keys() if k not in ("name","updated_at")]
+            return {"ok": True, "target": target, "profile": name, "injectable_keys": keys, "note": "Secrets are injected at runtime only; raw values never returned."}
+        return {"error": f"unknown auth_vault action: {action}"}
+
+    def _run_http_request(self, args: Dict[str, Any]) -> Any:
+        import requests as _rq
+        a = args or {}
+        target = self._active_target(a)
+        method = str(a.get("method") or "GET").upper().strip()
+        url = str(a.get("url") or "").strip()
+        if not url:
+            return {"error": "url required"}
+        headers = dict(a.get("headers") or {})
+        auth_profile = str(a.get("auth_profile") or a.get("profile") or "").strip()
+        if target and auth_profile:
+            headers = auth_vault.inject_headers(target, auth_profile, headers)
+        timeout = max(1, min(int(a.get("timeout", 30)), 120))
+        kwargs: Dict[str, Any] = {
+            "headers": headers,
+            "params": a.get("params") or None,
+            "timeout": timeout,
+            "allow_redirects": bool(a.get("allow_redirects", True)),
+        }
+        if a.get("json") is not None:
+            kwargs["json"] = a.get("json")
+        elif a.get("data") is not None:
+            kwargs["data"] = a.get("data")
+        # proxy routing
+        use_proxy = bool(a.get("proxy"))
+        proxy_url = ""
+        if use_proxy and getattr(self, "proxy", None) and self.proxy.status().get("running"):
+            port = self.proxy.status().get("port")
+            proxy_url = f"http://127.0.0.1:{port}"
+            kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
+        try:
+            resp = _rq.request(method, url, **kwargs)
+            body = resp.text or ""
+            preview = body[:4000]
+            parsed_headers = {k: ("[REDACTED]" if k.lower() in {"set-cookie","authorization","cookie"} else v) for k, v in resp.headers.items()}
+            out = {
+                "ok": True,
+                "status": resp.status_code,
+                "url": str(resp.url),
+                "method": method,
+                "headers": parsed_headers,
+                "body_preview": preview,
+                "body_bytes": len(resp.content or b""),
+                "elapsed_ms": int(getattr(resp, "elapsed", None).total_seconds() * 1000) if getattr(resp, "elapsed", None) else None,
+                "auth_profile": auth_profile or None,
+                "proxy": proxy_url or None,
+            }
+            # auto-upsert endpoint/params to KG
+            if target and str(resp.url).startswith(("http://","https://")):
+                try:
+                    kg_util.add_endpoint(target, str(resp.url).split("?")[0], {"method": method, "status": resp.status_code, "seen_via": "http_request"}, source="http_request")
+                    from urllib.parse import urlparse, parse_qs
+                    for pn in parse_qs(urlparse(str(resp.url)).query).keys():
+                        kg_util.add_param(target, str(resp.url).split("?")[0], pn, "query", {"seen_via": "http_request"}, source="http_request")
+                except Exception:
+                    pass
+            return out
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "url": url, "method": method, "auth_profile": auth_profile or None, "proxy": proxy_url or None}
+
+    async def _run_proxy_control(self, args: Dict[str, Any]) -> Any:
+        a = args or {}
+        action = str(a.get("action") or "status").strip()
+        target = self._active_target(a) or "default"
+        if action == "start":
+            return await self.proxy.start(target, port=int(a.get("port", 8080)))
+        if action == "stop":
+            return await self.proxy.stop()
+        if action == "status":
+            return self.proxy.status()
+        if action == "import":
+            return self.proxy.export_to_graph(target=target, limit=int(a.get("limit", 500)))
+        if action == "replay":
+            # replay captured flows matching url/match via http_request harness
+            match = str(a.get("match") or a.get("url") or "").lower()
+            lp = proxy_util.PROXY_ROOT / kg_util.slugify(target) / "flows.jsonl"
+            if not lp.exists():
+                return {"ok": False, "error": f"no flow log: {lp}"}
+            flows = []
+            for line in lp.read_text(encoding="utf-8", errors="replace").splitlines()[-int(a.get("limit", 200)):]:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                url = str(e.get("url") or "")
+                if match and match not in url.lower() and match != str(e.get("method","")).lower():
+                    continue
+                flows.append(e)
+            results = []
+            for e in flows[:20]:
+                req = {"url": e.get("url"), "method": e.get("method") or "GET", "target": target}
+                if a.get("auth_profile"):
+                    req["auth_profile"] = a.get("auth_profile")
+                results.append(await asyncio.to_thread(self._run_http_request, req))
+            return {"ok": True, "target": target, "matched": len(flows), "replayed": len(results), "results": results}
+        return {"error": f"unknown proxy_control action: {action}"}
+
+    def _run_source_index(self, args: Dict[str, Any]) -> Any:
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        action = str(a.get("action") or "index_paths").strip()
+        if action == "index_paths":
+            paths = a.get("paths") or []
+            if isinstance(paths, str): paths = [paths]
+            return source_correlation.index_paths(target, [str(p) for p in paths], base_url=str(a.get("base_url") or ""), limit=int(a.get("limit", 40)))
+        if action == "fetch_js":
+            return source_correlation.fetch_and_index_js(target, str(a.get("url") or ""), timeout=int(a.get("timeout", 20)))
+        return {"error": f"unknown source_index action: {action}"}
+
+    def _run_blackboard(self, args: Dict[str, Any]) -> Any:
+        from agent import blackboard as bb
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        action = str(a.get("action") or "summary").strip()
+        if action == "post":
+            item = bb.post(target, str(a.get("kind") or "intent"), str(a.get("text") or ""), status=str(a.get("status") or "open"), source=str(a.get("source") or "agent"), refs=a.get("refs"), confidence=a.get("confidence"), meta=a.get("meta"))
+            return {"ok": True, "item": item}
+        if action == "list":
+            return {"ok": True, "items": bb.list_items(target, kind=str(a.get("kind") or ""), status=str(a.get("status") or ""), limit=int(a.get("limit", 50)))}
+        if action == "claim":
+            return bb.claim(target, str(a.get("id") or ""), str(a.get("owner") or "agent"))
+        if action == "resolve":
+            return bb.resolve(target, str(a.get("id") or ""), str(a.get("status") or "done"), str(a.get("note") or ""))
+        if action == "summary":
+            return {"ok": True, **bb.summary(target)}
+        return {"error": f"unknown blackboard action: {action}"}
+
+    def _run_oracle(self, args: Dict[str, Any]) -> Any:
+        from agent import oracle
+        a = dict(args or {})
+        target = self._active_target(a)
+        kind = str(a.get("kind") or "")
+        # inject auth profile headers if provided
+        headers = dict(a.get("headers") or {})
+        prof = str(a.get("auth_profile") or "")
+        if target and prof:
+            headers = auth_vault.inject_headers(target, prof, headers)
+        a["headers"] = headers
+        res = oracle.run_oracle(kind, **a)
+        # log oracle verdict as evidence/blackboard fact
+        if target:
+            try:
+                evidence_util.record(target, tool="oracle_validate", args={"kind": kind, "url": a.get("url") or a.get("url_a")}, result=json.dumps(res, ensure_ascii=False)[:4000], ok=bool(res.get("verdict") and res.get("verdict") != "external_listener_required"), source="oracle", tags=["oracle", kind])
+            except Exception:
+                pass
+        return res
+
+    def _run_attack_paths(self, args: Dict[str, Any]) -> Any:
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        return {"target": target, "paths": kg_util.rank_attack_paths(target, max_paths=int(a.get("max_paths", 10)), max_depth=int(a.get("max_depth", 5)))}
+
+    async def _run_verify_findings(self, args: Dict[str, Any]) -> Any:
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        action = str(a.get("action") or "list").strip()
+        findings = kg_util.query(target, kind="finding", limit=int(a.get("limit", 200)))
+        needle = str(a.get("finding") or "").lower().strip()
+        if needle:
+            findings = [f for f in findings if needle in str(f.get("id","")).lower() or needle in str(f.get("key","")).lower() or needle in str((f.get("attrs") or {}).get("title","")).lower()]
+        if action == "list":
+            out = []
+            for f in findings:
+                attrs = f.get("attrs") or {}
+                out.append({"id": f.get("id"), "key": f.get("key"), "title": attrs.get("title"), "status": attrs.get("status"), "severity": attrs.get("severity"), "repro_script": attrs.get("repro_script"), "repro_command": attrs.get("repro_command"), "evidence_ref": attrs.get("evidence_ref"), "last_replay_verdict": attrs.get("last_replay_verdict")})
+            return {"ok": True, "target": target, "findings": out}
+        if action == "save_repro":
+            if not findings:
+                return {"ok": False, "error": "finding not found"}
+            f = findings[0]
+            attrs = dict(f.get("attrs") or {})
+            content = str(a.get("content") or "")
+            kind = str(a.get("kind") or ("sh" if str(a.get("filename","")).endswith(".sh") else "py"))
+            if not content.strip():
+                return {"ok": False, "error": "content required"}
+            art = evidence_util.save_repro_artifact(target, str(f.get("id") or attrs.get("title") or "finding"), content, kind=kind)
+            if art.get("ok"):
+                attrs["repro_script"] = art.get("path")
+                attrs["repro_sha256"] = art.get("sha256")
+                kg_util.upsert_node(target, "finding", str(attrs.get("title") or f.get("id")), attrs, source="verify_findings")
+                evidence_util.record(target, tool="verify_findings", args={"action":"save_repro","finding":f.get("id")}, result=json.dumps(art), ok=True, source="verify_findings", tags=["repro","artifact"])
+            return art
+        if action in ("replay", "replay_all"):
+            selected = findings if action == "replay_all" else findings[:1]
+            results = []
+            for f in selected:
+                attrs = dict(f.get("attrs") or {})
+                repro_script = str(attrs.get("repro_script") or "")
+                repro_cmd = str(attrs.get("repro_command") or "")
+                if not repro_script and not repro_cmd:
+                    results.append({"finding": f.get("id"), "status": "skipped", "reason": "no repro_script/repro_command"})
+                    continue
+                if repro_script:
+                    # run script path with bash/python based on suffix
+                    p = Path(repro_script).expanduser()
+                    if not p.is_absolute(): p = (kg_util.target_dir(target) / repro_script).resolve()
+                    if not p.exists():
+                        results.append({"finding": f.get("id"), "status": "error", "reason": f"missing repro script: {p}"})
+                        continue
+                    cmd = ["/bin/bash", str(p)] if p.suffix == ".sh" else [sys.executable, str(p)]
+                else:
+                    cmd = ["/bin/bash", "-lc", repro_cmd]
+                try:
+                    proc = await asyncio.create_subprocess_exec(*cmd, cwd=os.getcwd(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                    out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=max(10, min(int(a.get("timeout", 120)), 600)))
+                    out = out_b.decode("utf-8", errors="replace")[-8000:]
+                    exit_code = proc.returncode
+                except Exception as exc:
+                    out = str(exc); exit_code = -1
+                verdict = "still_vulnerable" if exit_code == 0 else "fixed_or_not_reproduced"
+                # update finding node status attrs
+                attrs["last_replay_exit"] = exit_code
+                attrs["last_replay_verdict"] = verdict
+                attrs["last_replay_at"] = time.time()
+                attrs["last_replay_output"] = out[:2000]
+                if verdict == "still_vulnerable":
+                    attrs["status"] = "proved"
+                kg_util.upsert_node(target, "finding", str(attrs.get("title") or f.get("id")), attrs, source="verify_findings")
+                evidence_util.record(target, tool="verify_findings", args={"finding": f.get("id")}, result=out, ok=exit_code==0, source="verify_findings", tags=["replay", verdict])
+                results.append({"finding": f.get("id"), "title": attrs.get("title"), "exit_code": exit_code, "verdict": verdict, "output": out[:2000]})
+            return {"ok": True, "target": target, "results": results}
+        return {"error": f"unknown verify_findings action: {action}"}
+
     def _run_local(self, name: str, args: Dict[str, Any]) -> Any:
         a = args or {}
         cwd = os.getcwd()
@@ -949,11 +1261,34 @@ class ToolRegistry:
         if name == "fetch_web_content":
             return cline_tools.fetch_web_content(a.get("requests", a))
         if name == "browser":
+            target = self._active_target(a)
+            auth_profile = str(a.get("auth_profile") or a.get("session_profile") or "").strip()
+            extra_headers = dict(a.get("headers") or {})
+            extra_cookies = a.get("cookies") if isinstance(a.get("cookies"), list) else None
+            proxy_url = str(a.get("proxy") or "").strip()
+            if a.get("use_proxy") and getattr(self, "proxy", None) and self.proxy.status().get("running"):
+                proxy_url = proxy_url or f"http://127.0.0.1:{self.proxy.status().get('port')}"
+            if target and auth_profile:
+                try:
+                    prof = auth_vault.get_profile(target, auth_profile, include_secrets=True)
+                    pdat = prof.get("profile") or {}
+                    extra_headers = auth_vault.inject_headers(target, auth_profile, extra_headers)
+                    # also pass cookies for browser worker
+                    ck = pdat.get("cookies")
+                    if isinstance(ck, list):
+                        extra_cookies = (extra_cookies or []) + [c for c in ck if isinstance(c, dict)]
+                    elif isinstance(ck, dict):
+                        extra_cookies = (extra_cookies or []) + [{"name":k,"value":v} for k,v in ck.items()]
+                except Exception:
+                    pass
             return browser.run(
                 a.get("actions", a.get("action")),
                 engine=str(a.get("engine") or "auto"),
                 session=str(a.get("session") or "default"),
                 timeout=int(a.get("timeout") or browser.DEFAULT_TIMEOUT),
+                proxy=proxy_url,
+                cookies=extra_cookies,
+                headers=extra_headers,
             )
         if name == "apply_patch":
             return cline_tools.apply_patch(str(a.get("input") or ""), cwd)
@@ -1113,7 +1448,8 @@ CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
   hosts, services, endpoints, HTTP methods, auth states, parameters, and findings as
   you discover them. The active target's graph/evidence/planner summary is injected into
   context — keep it current. Evidence is auto-captured; add manual `evidence_log`
-  entries for important observations.
+  entries for important observations. Use `blackboard` for shared Facts/Intents/Human Hints
+  so subagents/operators can coordinate asynchronously.
 - Adaptive hypothesis loop (enforced workflow): every probe is a hypothesis. After
   meaningful observations, call `planner_update` with action=observe and record
   `observed`, `hypothesis_delta`, and `next_action`. On failure/block (403, 401,
@@ -1144,8 +1480,10 @@ CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
   evidence. Use the level of impact needed to prove it (controlled/impactful PoCs are fine
   when necessary); prefer minimal/reversible steps when possible and clean up artifacts.
   Mark proved only when you can cite request/response/behavior in evidence. Never
-  hallucinate impact. Use `knowledge_graph` finding attrs/status to distinguish
-  attempted vs proved vs false_positive.
+  hallucinate impact. Use `oracle_validate` for deterministic checks (differential response,
+  timing delta, reflection, external OAST note) before promoting scanner/LLM claims.
+  Use `knowledge_graph` finding attrs/status to distinguish attempted vs proved vs false_positive.
+  Save deterministic repro via `verify_findings save_repro` and recheck with `/verify-findings` or `verify_findings replay`.
 - Structured remediation output: reports/findings must include scope/target, asset,
   status (attempted/proved), reproduction steps, evidence refs, severity, impact, and
   concrete remediation. Use `report_generate` for markdown/HTML from graph+evidence.
@@ -1339,14 +1677,29 @@ async def _execute_tool(
             hint = "Tool binary missing on this system. Do not retry the same tool. Pivot to alternative CLI/MCP/browser/curl/python. If install is truly needed, ask the user for permission, install it (apt/pip/go/cargo as appropriate), then retry once."
             result = result.rstrip() + f"\n\n[agent-hint] {hint}"
             yield {"type": "notice", "message": hint}
-    # Auto-capture evidence and lightweight planner observation when target is active.
+    # Auto-capture evidence, parse/normalize tool output, and upsert KG deltas.
+    llm_result = result
     try:
         _target = str(appconfig.get("active_target") or "").strip()
+        parsed_delta = None
+        # Structured output normalizer/context compression at tool layer.
+        try:
+            compacted, parsed_delta = tool_parsers.compact_for_context(name, args, result)
+            if parsed_delta:
+                llm_result = compacted
+        except Exception:
+            parsed_delta = None
         if _target and name not in ("evidence_log",):
+            artifact = {"parsed_delta": parsed_delta} if parsed_delta else None
             await asyncio.to_thread(
                 evidence_util.record, _target,
-                tool=name, args=args, result=result, ok=ok, source="agent", tags=["auto"],
+                tool=name, args=args, result=result, ok=ok, source="agent", tags=["auto"], artifact=artifact,
             )
+        if _target and parsed_delta:
+            try:
+                await asyncio.to_thread(tool_parsers.upsert_to_graph, _target, parsed_delta, f"tool:{name}")
+            except Exception:
+                pass
         if _target and name not in ("planner_update",):
             obs = str(result or "")
             obs = obs.replace("\n", " ")[:280]
@@ -1367,7 +1720,6 @@ async def _execute_tool(
                         v = payload.get(k)
                         if isinstance(v, str): shots.append(v)
                         elif isinstance(v, list): shots.extend([x for x in v if isinstance(x, str)])
-                    # common nested shape
                     for r in (payload.get("results") or []):
                         if isinstance(r, dict):
                             for k in ("screenshot", "path", "artifact"):
@@ -1390,12 +1742,13 @@ async def _execute_tool(
             except Exception:
                 pass
     except Exception:
-        pass
+        llm_result = result
     yield {
         "type": "tool_end",
         "name": name,
         "display": registry.display_name(name),
         "result": result,
+        "llm_result": llm_result,
         "duration": max(0.0, duration),
         "ok": ok,
         "background": background,
@@ -1973,6 +2326,7 @@ async def run_agent(
                     return
                 tools_used += 1
                 result = ""
+                llm_result = ""
                 tool_ok = True
                 async for event in _execute_tool(registry, name, args):
                     yield event
@@ -1980,6 +2334,7 @@ async def run_agent(
                         denials += 1
                     if event.get("type") == "tool_end":
                         result = event.get("result", "")
+                        llm_result = event.get("llm_result", result)
                         tool_ok = bool(event.get("ok", True))
                         try:
                             tool_payload = json.loads(result)
@@ -1996,7 +2351,7 @@ async def run_agent(
                 if should_verify(name, result, tool_ok):
                     needs_verify = True
                     edited_any = True
-                messages.append({"role": "tool", "tool_call_id": call.get("id") or f"call_{name}", "content": result})
+                messages.append({"role": "tool", "tool_call_id": call.get("id") or f"call_{name}", "content": llm_result or result})
                 if name == "submit_and_exit":
                     try:
                         submit_payload = json.loads(result)
@@ -2053,6 +2408,7 @@ async def run_agent(
                     return
                 tools_used += 1
                 result = ""
+                llm_result = ""
                 tool_ok = True
                 async for event in _execute_tool(registry, name, args):
                     yield event
@@ -2060,6 +2416,7 @@ async def run_agent(
                         denials += 1
                     if event.get("type") == "tool_end":
                         result = event.get("result", "")
+                        llm_result = event.get("llm_result", result)
                         tool_ok = bool(event.get("ok", True))
                         try:
                             tool_payload = json.loads(result)
@@ -2076,7 +2433,7 @@ async def run_agent(
                 if should_verify(name, result, tool_ok):
                     needs_verify = True
                     edited_any = True
-                messages.append({"role": "user", "content": f"Tool result for {name}:\n{result}\n\nContinue."})
+                messages.append({"role": "user", "content": f"Tool result for {name}:\n{llm_result or result}\n\nContinue."})
                 if name == "submit_and_exit":
                     try:
                         submit_payload = json.loads(result)

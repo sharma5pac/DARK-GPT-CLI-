@@ -72,6 +72,17 @@ def build_report_data(target: str) -> Dict[str, Any]:
             "result_bytes": e.get("result_bytes"),
             "result_preview": str(e.get("result_preview") or "")[:500],
         })
+    attack_paths = []
+    blackboard_summary = {}
+    try:
+        attack_paths = kg.rank_attack_paths(target, max_paths=10, max_depth=5)
+    except Exception:
+        pass
+    try:
+        from agent import blackboard as bb
+        blackboard_summary = bb.summary(target)
+    except Exception:
+        pass
     return {
         "target": g.get("target", target),
         "slug": g.get("slug", ""),
@@ -96,6 +107,8 @@ def build_report_data(target: str) -> Dict[str, Any]:
             "services": [n.get("attrs", {}) for n in kg.query(target, kind="service", limit=1000)],
             "endpoints": [n.get("attrs", {}) for n in kg.query(target, kind="endpoint", limit=1000)],
         },
+        "attack_paths": attack_paths,
+        "blackboard": blackboard_summary,
         "execution_trace": trace,
         "evidence_by_tool": ev.get("by_tool") or {},
     }
@@ -152,6 +165,15 @@ def build_markdown(target: str) -> str:
         if not items:
             lines.append("_None_")
         lines.append("")
+    lines.append("## Attack Paths")
+    lines.append("")
+    aps = d.get("attack_paths") or []
+    if not aps:
+        lines.append("_No ranked attack paths yet._")
+    for pth in aps[:10]:
+        seq = " -> ".join(f"{n.get('kind')}:{n.get('label')}" for n in pth.get("nodes", []))
+        lines.append(f"- score={pth.get('score')}: {seq}")
+    lines.append("")
     lines.append("## Execution Trace (recent evidence)")
     lines.append("")
     lines.append("| Time (UTC) | ID | Tool | OK | SHA-256 | Preview |")

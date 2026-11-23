@@ -100,6 +100,9 @@ def run(
     session: str = "default",
     timeout: int = DEFAULT_TIMEOUT,
     headless: bool = True,
+    proxy: str = "",
+    cookies: Optional[List[Dict[str, Any]]] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Execute browser actions and return a compact structured result."""
     if isinstance(actions, dict):
@@ -168,13 +171,19 @@ def run(
     if engine == "auto" and not _playwright_healthy():
         engine = "selenium-first"  # worker will interpret; also keep compat
     state = _load_session(str(session)[:40] or "default")
+    merged_cookies = list(state.get("cookies") or [])
+    if cookies:
+        # caller-provided cookies override by name+domain best-effort
+        merged_cookies.extend([c for c in cookies if isinstance(c, dict)])
     job = {
         "actions": steps,
         "engine": engine,
         "headless": bool(headless),
         "nav_timeout": timeout,
-        "cookies": state.get("cookies") or [],
+        "cookies": merged_cookies,
         "storage": state.get("storage") or None,
+        "proxy": str(proxy or ""),
+        "headers": dict(headers or {}),
     }
     payload = json.dumps(job, ensure_ascii=False)
     py = _system_python()

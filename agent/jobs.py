@@ -1,15 +1,16 @@
-"""Lightweight in-process background jobs for DarkGPT.
+"""Disk-backed background jobs for DarkGPT.
 
-Lets the agent fire shell commands/scripts without blocking on one terminal,
-then poll/wait/log/kill them. Jobs live for the process lifetime; output is
-bounded and kept in memory + optional log file under ~/.cache/darkgpt/jobs.
+Jobs run as detached subprocesses so they survive TUI restarts. Metadata and
+logs live under ~/.cache/darkgpt/jobs/. The API stays compatible with the
+in-process manager used by agent/core.py and the TUI.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import shlex
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -19,34 +20,99 @@ from typing import Any, Dict, List, Optional
 from utils import scripting
 
 JOB_DIR = Path.home() / ".cache" / "darkgpt" / "jobs"
+STATE_PATH = JOB_DIR / "jobs.json"
 MAX_OUTPUT = 24000
 DEFAULT_WAIT = 30
 MAX_WAIT = 300
 
 
+def _now() -> float:
+    return time.time()
+
+
+def _ensure() -> None:
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_state() -> Dict[str, Any]:
+    _ensure()
+    try:
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("jobs", {})
+            return data
+    except Exception:
+        pass
+    return {"version": 1, "jobs": {}}
+
+
+def _write_state(state: Dict[str, Any]) -> None:
+    _ensure()
+    tmp = STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, STATE_PATH)
+
+
+def _pid_alive(pid: int) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _tail_text(path: str, tail: int = 4000) -> str:
+    try:
+        p = Path(path)
+        if not p.exists():
+            return ""
+        text = p.read_text(encoding="utf-8", errors="replace")
+        if len(text) > tail:
+            return "...[tail %d chars]\n%s" % (tail, text[-tail:])
+        return text
+    except Exception:
+        return ""
+
+
 @dataclass
 class Job:
     id: str
-    kind: str  # shell|script
+    kind: str
     label: str
     cwd: str
     command: List[str]
     script_path: str = ""
-    status: str = "running"  # running|done|error|killed|timeout
+    status: str = "running"
     exit_code: Optional[int] = None
-    started: float = field(default_factory=time.time)
+    started: float = field(default_factory=_now)
     ended: Optional[float] = None
-    output: List[str] = field(default_factory=list)
-    output_len: int = 0
     log_path: str = ""
-    _proc: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
-    _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    pid: Optional[int] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "Job":
+        return Job(
+            id=str(d.get("id") or ""),
+            kind=str(d.get("kind") or "shell"),
+            label=str(d.get("label") or ""),
+            cwd=str(d.get("cwd") or os.getcwd()),
+            command=list(d.get("command") or []),
+            script_path=str(d.get("script_path") or ""),
+            status=str(d.get("status") or "running"),
+            exit_code=d.get("exit_code"),
+            started=float(d.get("started") or _now()),
+            ended=d.get("ended"),
+            log_path=str(d.get("log_path") or ""),
+            pid=d.get("pid"),
+        )
 
     def to_dict(self, include_output: bool = False, tail: int = 4000) -> Dict[str, Any]:
-        out = "".join(self.output)
-        if len(out) > tail:
-            out = out[-tail:]
-            out = f"...[tail {tail} chars]\n{out}"
         d = {
             "id": self.id,
             "kind": self.kind,
@@ -57,39 +123,78 @@ class Job:
             "script_path": self.script_path or None,
             "started": self.started,
             "ended": self.ended,
-            "duration": max(0.0, (self.ended or time.time()) - self.started),
+            "duration": max(0.0, (self.ended or _now()) - self.started),
             "log_path": self.log_path or None,
-            "output_bytes": self.output_len,
+            "output_bytes": Path(self.log_path).stat().st_size if self.log_path and Path(self.log_path).exists() else 0,
+            "pid": self.pid,
         }
         if include_output:
-            d["output"] = out
+            d["output"] = _tail_text(self.log_path, tail=tail)
         return d
-
-    def append(self, text: str) -> None:
-        if not text:
-            return
-        self.output_len += len(text)
-        self.output.append(text)
-        total = sum(len(c) for c in self.output)
-        if total > MAX_OUTPUT:
-            joined = "".join(self.output)
-            self.output = [joined[-MAX_OUTPUT:]]
-        try:
-            if self.log_path:
-                Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(self.log_path, "a", encoding="utf-8", errors="replace") as f:
-                    f.write(text)
-        except Exception:
-            pass
 
 
 class JobManager:
     def __init__(self) -> None:
-        self._jobs: Dict[str, Job] = {}
         self._lock = asyncio.Lock()
+        _ensure()
 
     def _new_id(self) -> str:
         return f"job_{uuid.uuid4().hex[:10]}"
+
+    def _refresh_job(self, job: Job) -> Job:
+        if job.status == "running" and job.pid and not _pid_alive(int(job.pid)):
+            # process gone; infer status from log marker
+            tail = _tail_text(job.log_path, tail=2000)
+            status = "done"
+            code = job.exit_code
+            m = None
+            for line in reversed(tail.splitlines()):
+                if line.startswith("[exit "):
+                    m = line
+                    break
+            if m:
+                # [exit N status=... duration=...]
+                try:
+                    parts = m.strip("[]").split()
+                    for p in parts:
+                        if p.startswith("exit") and len(parts) > 1:
+                            pass
+                    code = int(parts[1])
+                    for p in parts:
+                        if p.startswith("status="):
+                            status = p.split("=", 1)[1]
+                except Exception:
+                    pass
+            job.status = status
+            job.exit_code = code if code is not None else 0
+            job.ended = job.ended or _now()
+        return job
+
+    def _load_jobs(self) -> Dict[str, Job]:
+        state = _read_state()
+        jobs = {}
+        dirty = False
+        for jid, jd in (state.get("jobs") or {}).items():
+            if not isinstance(jd, dict):
+                continue
+            job = Job.from_dict(jd)
+            old = (job.status, job.exit_code, job.ended)
+            job = self._refresh_job(job)
+            if (job.status, job.exit_code, job.ended) != old:
+                state["jobs"][jid] = job.to_dict()
+                dirty = True
+            jobs[jid] = job
+        if dirty:
+            _write_state(state)
+        return jobs
+
+    def _save_job(self, job: Job) -> None:
+        state = _read_state()
+        state.setdefault("jobs", {})[job.id] = job.to_dict()
+        # keep last 500 jobs
+        items = sorted(state["jobs"].items(), key=lambda kv: float((kv[1] or {}).get("started") or 0), reverse=True)[:500]
+        state["jobs"] = dict(items)
+        _write_state(state)
 
     async def start_shell(self, command: str, cwd: str = "", label: str = "") -> Dict[str, Any]:
         cmd = str(command or "").strip()
@@ -112,92 +217,102 @@ class JobManager:
 
     async def _start(self, job: Job) -> Dict[str, Any]:
         try:
-            JOB_DIR.mkdir(parents=True, exist_ok=True)
-            Path(job.log_path).write_text(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] START {job.kind} {job.label}\n", encoding="utf-8")
-            proc = await asyncio.create_subprocess_exec(
-                *job.command,
-                cwd=job.cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            _ensure()
+            logf = open(job.log_path, "ab", buffering=0)
+            logf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] START {job.kind} {job.label}\n".encode("utf-8", "replace"))
+            logf.flush()
+            # Wrap command to capture exit code/status and persist across TUI restarts.
+            wrapped = (
+                "set -o pipefail; "
+                + " ".join([json.dumps(c) for c in job.command]) if False else ""
             )
+            # Build a shell wrapper for consistent exit marker
+            cmd_str = " ".join(shlex_quote(c) for c in job.command)
+            wrapper = f"{cmd_str}; ec=$?; echo; echo \"[exit $ec status=$( [ $ec -eq 0 ] && echo done || echo error ) duration=${{SECONDS}}s]\"; exit $ec"
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/bash", "-lc", wrapper,
+                cwd=job.cwd,
+                stdout=logf,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+            )
+            job.pid = proc.pid
+            logf.close()
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"cannot start job: {exc}"}
-        job._proc = proc
         async with self._lock:
-            self._jobs[job.id] = job
-        asyncio.create_task(self._pump(job))
-        return {"ok": True, "job": job.to_dict(), "message": f"Started {job.id}. Use task_wait/task_log/task_list to monitor."}
-
-    async def _pump(self, job: Job) -> None:
-        proc = job._proc
-        try:
-            assert proc is not None
-            if proc.stdout is not None:
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        break
-                    job.append(line.decode("utf-8", "replace"))
-            code = await proc.wait()
-            job.exit_code = int(code)
-            job.status = "done" if code == 0 else "error"
-        except asyncio.CancelledError:
-            try:
-                if proc and proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
-            except Exception:
-                pass
-            job.status = "killed"
-        except Exception as exc:  # noqa: BLE001
-            job.append(f"\n[job error] {exc}\n")
-            job.status = "error"
-            job.exit_code = job.exit_code if job.exit_code is not None else -1
-        finally:
-            job.ended = time.time()
-            job.append(f"\n[exit {job.exit_code} status={job.status} duration={max(0.0, job.ended-job.started):.2f}s]\n")
-            job._done.set()
+            self._save_job(job)
+        return {"ok": True, "job": job.to_dict(), "message": f"Started {job.id} (pid {job.pid}). Use task_wait/task_log/task_list to monitor. Survives TUI restart."}
 
     def list(self, limit: int = 20) -> Dict[str, Any]:
-        jobs = sorted(self._jobs.values(), key=lambda j: j.started, reverse=True)[: max(1, min(limit, 100))]
-        return {"ok": True, "jobs": [j.to_dict() for j in jobs], "count": len(self._jobs)}
+        jobs = sorted(self._load_jobs().values(), key=lambda j: j.started, reverse=True)[: max(1, min(limit, 100))]
+        return {"ok": True, "jobs": [j.to_dict() for j in jobs], "count": len(self._load_jobs())}
 
     def get(self, job_id: str) -> Optional[Job]:
-        return self._jobs.get(str(job_id or "").strip())
+        return self._load_jobs().get(str(job_id or "").strip())
 
     async def wait(self, job_ids: List[str], timeout: int = DEFAULT_WAIT) -> Dict[str, Any]:
         ids = [str(i).strip() for i in (job_ids or []) if str(i).strip()]
-        jobs = [self._jobs[i] for i in ids if i in self._jobs]
-        missing = [i for i in ids if i not in self._jobs]
-        if not jobs and missing:
-            return {"ok": False, "error": "unknown job ids", "missing": missing}
+        missing = [i for i in ids if i not in self._load_jobs()]
         timeout = max(1, min(int(timeout or DEFAULT_WAIT), MAX_WAIT))
-        try:
-            await asyncio.wait_for(asyncio.gather(*(j._done.wait() for j in jobs)), timeout=timeout)
-            done = True
-        except asyncio.TimeoutError:
-            done = False
-        return {
-            "ok": True,
-            "done": done,
-            "jobs": [j.to_dict(include_output=True) for j in jobs],
-            "missing": missing,
-        }
+        deadline = _now() + timeout
+        done = False
+        while _now() < deadline:
+            jobs = self._load_jobs()
+            selected = [jobs[i] for i in ids if i in jobs]
+            if selected and all(j.status != "running" for j in selected):
+                done = True
+                break
+            await asyncio.sleep(0.5)
+        jobs = self._load_jobs()
+        selected = [jobs[i] for i in ids if i in jobs]
+        return {"ok": True, "done": done, "jobs": [j.to_dict(include_output=True) for j in selected], "missing": [i for i in ids if i not in jobs]}
 
     async def kill(self, job_id: str) -> Dict[str, Any]:
         job = self.get(job_id)
         if not job:
             return {"ok": False, "error": f"unknown job: {job_id}"}
-        if job.status == "running" and job._proc and job._proc.returncode is None:
+        if job.status == "running" and job.pid and _pid_alive(int(job.pid)):
             try:
-                job._proc.kill()
-                await job._proc.wait()
-            except Exception as exc:  # noqa: BLE001
-                return {"ok": False, "error": f"kill failed: {exc}", "job": job.to_dict(include_output=True)}
+                os.killpg(int(job.pid), signal.SIGTERM)
+                await asyncio.sleep(0.5)
+                if _pid_alive(int(job.pid)):
+                    os.killpg(int(job.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    os.kill(int(job.pid), signal.SIGKILL)
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "error": f"kill failed: {exc}", "job": job.to_dict(include_output=True)}
+            job.status = "killed"
+            job.ended = _now()
+            try:
+                with open(job.log_path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(f"\n[killed by user]\n")
+            except Exception:
+                pass
+            self._save_job(job)
+        job = self._refresh_job(job)
+        self._save_job(job)
         return {"ok": True, "job": job.to_dict(include_output=True)}
 
     def log(self, job_id: str, tail: int = 4000) -> Dict[str, Any]:
         job = self.get(job_id)
         if not job:
             return {"ok": False, "error": f"unknown job: {job_id}"}
+        job = self._refresh_job(job)
+        self._save_job(job)
         return {"ok": True, "job": job.to_dict(include_output=True, tail=max(200, min(tail, MAX_OUTPUT)))}
+
+
+def shlex_quote(s: str) -> str:
+    # minimal safe quote
+    if s == "":
+        return "''"
+    if re_safe(s):
+        return s
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
+def re_safe(s: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", s))

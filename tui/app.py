@@ -15,7 +15,13 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static, TextArea
+from textual.widgets import Button, Input, Markdown, OptionList, Static, TextArea
+
+# Ensure markdown responses are selectable/copyable in the TUI.
+try:
+    Markdown.ALLOW_SELECT = True
+except Exception:
+    pass
 from textual.widgets.option_list import Option
 
 from agent import tokens as token_util
@@ -55,6 +61,10 @@ COMMANDS: List[tuple[str, str]] = [
     ("/jobs", "List background tasks/jobs (/jobs <id> for log, /jobs kill <id>)"),
     ("/budget", "Show/set tool/step budget (/budget tools 60, /budget steps 40)"),
     ("/steps", "Alias for /budget steps <n>"),
+    ("/proxy", "Proxy control (/proxy status|start|stop|import)"),
+    ("/verify-findings", "Replay finding repros and mark fixed/still_vulnerable"),
+    ("/bb", "Blackboard summary/post (/bb, /bb post intent|fact|hint <text>)"),
+    ("/attack-paths", "Rank multi-hop attack paths from knowledge graph"),
     ("/mcp-verbose", "Toggle background MCP display (shown/hidden cards)"),
     ("/bg", "Show background tool findings (/bg <n> for full result of one call)"),
     ("/clipboard", "Show clipboard backends and QTerminal/X11/Wayland notes"),
@@ -593,13 +603,15 @@ class ErrorCard(Static):
         self.update(text)
 
 
-class ChatMessage(Static):
+class ChatMessage(Vertical):
     ALLOW_SELECT = True
 
     def __init__(self, role: str, content: str = "") -> None:
         super().__init__()
         self.role = role
         self.raw_content = content
+        self._md: Markdown | None = None
+        self._user_text: Static | None = None
 
     def on_mount(self) -> None:
         self.render_msg()
@@ -610,12 +622,37 @@ class ChatMessage(Static):
 
     def render_msg(self) -> None:
         if self.role == "user":
-            self.update(Text(self.raw_content, style="#f0f0f0"))
+            self.remove_class("msg-assistant")
             self.add_class("msg-user")
+            if self._md is not None:
+                self._md.remove()
+                self._md = None
+            if self._user_text is None:
+                self._user_text = Static(Text(self.raw_content, style="#f0f0f0"), markup=False)
+                self._user_text.ALLOW_SELECT = True
+                self.mount(self._user_text)
+            else:
+                self._user_text.update(Text(self.raw_content, style="#f0f0f0"))
         else:
-            self.remove_children()
-            self.update(RichMarkdown(self.raw_content or " "))
+            self.remove_class("msg-user")
             self.add_class("msg-assistant")
+            if self._user_text is not None:
+                self._user_text.remove()
+                self._user_text = None
+            content = self.raw_content or " "
+            if self._md is None:
+                self._md = Markdown(content)
+                self._md.ALLOW_SELECT = True
+                self.mount(self._md)
+            else:
+                try:
+                    self.run_worker(self._md.update(content), exclusive=False)
+                except Exception:
+                    try:
+                        import asyncio
+                        asyncio.create_task(self._md.update(content))
+                    except Exception:
+                        pass
 
 
 class PromptArea(TextArea):
@@ -1898,6 +1935,14 @@ class DarkGPTApp(App):
             await self._handle_jobs_command(parts)
         elif name in ("/budget", "/steps"):
             await self._handle_budget_command(name, parts)
+        elif name == "/proxy":
+            await self._handle_proxy_command(parts)
+        elif name == "/verify-findings":
+            await self._handle_verify_findings_command(parts)
+        elif name == "/bb":
+            await self._handle_blackboard_command(parts)
+        elif name == "/attack-paths":
+            await self._handle_attack_paths_command(parts)
         elif name == "/mcp-verbose":
             self.action_toggle_mcp_display()
         elif name == "/bg":
@@ -2648,7 +2693,7 @@ class DarkGPTApp(App):
             data = self._job_manager.list(limit=30)
             rows = data.get("jobs", [])
             if not rows:
-                self._system_note("No background jobs. Agent can start them with task_start; TUI tracks jobs started in this process.")
+                self._system_note("No background jobs. Agent can start them with task_start; jobs persist across TUI restarts under ~/.cache/darkgpt/jobs.")
                 return
             lines = ["Background jobs (most recent):"]
             for j in rows[:30]:
@@ -2677,6 +2722,100 @@ class DarkGPTApp(App):
         j = res.get("job", {})
         out = str(j.get("output") or "(no output)")
         self._system_note(f"Job {j.get('id')} [{j.get('status')}] exit={j.get('exit_code')}\n{out[-6000:]}")
+
+    async def _handle_proxy_command(self, parts: List[str]) -> None:
+        from agent import proxy as proxy_util, knowledge_graph as kg_util
+        if not hasattr(self, "_proxy_manager") or self._proxy_manager is None:
+            self._proxy_manager = proxy_util.ProxyManager()
+        args = parts[1:]
+        action = (args[0].lower() if args else "status")
+        target = str(appconfig.get("active_target") or "default")
+        if action == "start":
+            port = int(args[1]) if len(args) > 1 and args[1].isdigit() else 8080
+            res = await self._proxy_manager.start(target, port=port)
+        elif action == "stop":
+            res = await self._proxy_manager.stop()
+        elif action == "import":
+            res = self._proxy_manager.export_to_graph(target=target, limit=int(args[1]) if len(args) > 1 and args[1].isdigit() else 500)
+        else:
+            res = self._proxy_manager.status()
+        self._system_note(json.dumps(res, indent=2, ensure_ascii=False)[:6000])
+
+    async def _handle_verify_findings_command(self, parts: List[str]) -> None:
+        target = str(appconfig.get("active_target") or "").strip()
+        if not target:
+            self._system_note("No active target. Use /target <name> first.")
+            return
+        from agent import knowledge_graph as kg_util, evidence as ev, reporting as rep
+        args = parts[1:]
+        action = args[0].lower() if args else "list"
+        findings = kg_util.query(target, kind="finding", limit=200)
+        if action == "list":
+            rows = []
+            for f in findings[:50]:
+                a = f.get("attrs") or {}
+                rows.append(f"- {a.get('title')} [{a.get('status')}/{a.get('severity')}] repro={bool(a.get('repro_script') or a.get('repro_command'))}")
+            self._system_note("Findings:\n" + ("\n".join(rows) if rows else "(none)"))
+            return
+        # replay/replay_all: minimal local execution
+        selected = findings if action == "replay_all" else findings[:1]
+        results = []
+        for f in selected:
+            a = dict(f.get("attrs") or {})
+            cmd = a.get("repro_command")
+            script = a.get("repro_script")
+            if not cmd and not script:
+                results.append(f"{a.get('title')}: skipped (no repro)")
+                continue
+            if script:
+                p = Path(script)
+                if not p.is_absolute(): p = kg_util.target_dir(target) / script
+                shell_cmd = f"bash {p}" if p.suffix == ".sh" else f"python3 {p}"
+            else:
+                shell_cmd = str(cmd)
+            proc = await asyncio.create_subprocess_shell(shell_cmd, cwd=os.getcwd(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            verdict = "still_vulnerable" if proc.returncode == 0 else "fixed_or_not_reproduced"
+            a["last_replay_verdict"] = verdict
+            a["last_replay_exit"] = proc.returncode
+            a["status"] = "proved" if verdict == "still_vulnerable" else a.get("status", "attempted")
+            kg_util.upsert_node(target, "finding", str(a.get("title") or f.get("id")), a, source="verify_findings")
+            ev.record(target, tool="verify_findings", args={"finding": a.get("title")}, result=out.decode("utf-8",errors="replace")[-4000:], ok=proc.returncode==0, source="verify_findings", tags=["replay", verdict])
+            results.append(f"{a.get('title')}: {verdict} (exit {proc.returncode})")
+        self._system_note("\n".join(results) or "No findings selected.")
+
+    async def _handle_blackboard_command(self, parts: List[str]) -> None:
+        target = str(appconfig.get("active_target") or "").strip()
+        if not target:
+            self._system_note("No active target. Use /target <name> first.")
+            return
+        from agent import blackboard as bb
+        args = parts[1:]
+        if not args:
+            self._system_note(json.dumps(bb.summary(target), indent=2, ensure_ascii=False)[:6000])
+            return
+        if args[0].lower() == "post" and len(args) >= 3:
+            kind = args[1].lower(); text = " ".join(args[2:])
+            item = bb.post(target, kind, text, source="operator")
+            self._system_note(json.dumps(item, indent=2, ensure_ascii=False))
+            return
+        self._system_note("Usage: /bb | /bb post <fact|intent|hint> <text>")
+
+    async def _handle_attack_paths_command(self, parts: List[str]) -> None:
+        target = str(appconfig.get("active_target") or "").strip()
+        if not target:
+            self._system_note("No active target. Use /target <name> first.")
+            return
+        from agent import knowledge_graph as kg_util
+        paths = kg_util.rank_attack_paths(target, max_paths=10, max_depth=5)
+        if not paths:
+            self._system_note("No attack paths ranked yet.")
+            return
+        lines = [f"Attack paths for {target}:"]
+        for p in paths[:10]:
+            seq = " -> ".join(f"{n.get('kind')}:{n.get('label')}" for n in p.get("nodes", []))
+            lines.append(f"- score={p.get('score')} :: {seq}")
+        self._system_note("\n".join(lines))
 
     def _show_status(self) -> None:
         remaining = self._cooldown_remaining()
