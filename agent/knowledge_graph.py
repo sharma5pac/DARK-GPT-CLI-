@@ -1,0 +1,267 @@
+"""Per-target knowledge graph for recon/pentest work.
+
+Persists hosts → services → endpoints → findings so recon can resume and
+patterns/evidence transfer across engagements. Data is never deleted implicitly;
+merges are additive and idempotent by node key.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+ROOT = Path.home() / ".config" / "darkgpt" / "targets"
+
+
+def slugify(value: str) -> str:
+    text = re.sub(r"[^a-zA-Z0-9._-]+", "-", (value or "").strip().lower()).strip("-")
+    text = text[:80] or "target"
+    return text
+
+
+def target_dir(target: str) -> Path:
+    return ROOT / slugify(target)
+
+
+def graph_path(target: str) -> Path:
+    return target_dir(target) / "graph.json"
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _empty(target: str) -> Dict[str, Any]:
+    return {
+        "version": 1,
+        "target": target,
+        "slug": slugify(target),
+        "created_at": _now(),
+        "updated_at": _now(),
+        "nodes": {},  # key -> node
+        "edges": [],  # {src, dst, rel, ts}
+    }
+
+
+def _load(target: str) -> Dict[str, Any]:
+    path = graph_path(target)
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and isinstance(data.get("nodes"), dict):
+            data.setdefault("edges", [])
+            data.setdefault("target", target)
+            data.setdefault("slug", slugify(target))
+            return data
+    except Exception:
+        pass
+    return _empty(target)
+
+
+def _save(target: str, graph: Dict[str, Any]) -> None:
+    path = graph_path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    graph["updated_at"] = _now()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(graph, indent=2, ensure_ascii=False))
+    tmp.replace(path)
+
+
+def _node_key(kind: str, identity: str) -> str:
+    raw = f"{kind}:{(identity or '').strip().lower()}"
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def upsert_node(
+    target: str,
+    kind: str,
+    identity: str,
+    attrs: Optional[Dict[str, Any]] = None,
+    *,
+    source: str = "",
+) -> Dict[str, Any]:
+    graph = _load(target)
+    key = _node_key(kind, identity)
+    node = graph["nodes"].get(key) or {
+        "key": key,
+        "kind": kind,
+        "id": identity,
+        "attrs": {},
+        "sources": [],
+        "first_seen": _now(),
+    }
+    node["last_seen"] = _now()
+    merged = dict(node.get("attrs") or {})
+    for k, v in (attrs or {}).items():
+        if v in (None, "", [], {}, ()):  # don't clobber with empties
+            continue
+        if isinstance(v, list) and isinstance(merged.get(k), list):
+            existing = list(merged[k])
+            for item in v:
+                if item not in existing:
+                    existing.append(item)
+            merged[k] = existing[-50:]
+        else:
+            merged[k] = v
+    node["attrs"] = merged
+    if source and source not in node.get("sources", []):
+        node.setdefault("sources", []).append(source)
+        node["sources"] = node["sources"][-20:]
+    graph["nodes"][key] = node
+    _save(target, graph)
+    return node
+
+
+def add_edge(target: str, src_key: str, dst_key: str, rel: str) -> None:
+    graph = _load(target)
+    if src_key not in graph["nodes"] or dst_key not in graph["nodes"]:
+        return
+    edge = {"src": src_key, "dst": dst_key, "rel": rel}
+    for e in graph.get("edges", []):
+        if e.get("src") == src_key and e.get("dst") == dst_key and e.get("rel") == rel:
+            return
+    graph.setdefault("edges", []).append({**edge, "ts": _now()})
+    graph["edges"] = graph["edges"][-2000:]
+    _save(target, graph)
+
+
+def add_host(target: str, host: str, attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    return upsert_node(target, "host", host, {"host": host, **(attrs or {})}, source=source)
+
+
+def add_service(target: str, host: str, port: Any, proto: str = "tcp", attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    identity = f"{host}:{port}/{proto}"
+    svc = upsert_node(target, "service", identity, {"host": host, "port": int(port), "proto": proto, **(attrs or {})}, source=source)
+    h = add_host(target, host, source=source)
+    add_edge(target, h["key"], svc["key"], "has_service")
+    return svc
+
+
+def add_endpoint(target: str, url: str, attrs: Optional[Dict[str, Any]] = None, source: str = "") -> Dict[str, Any]:
+    ep = upsert_node(target, "endpoint", url, {"url": url, **(attrs or {})}, source=source)
+    # link to host if parseable
+    m = re.match(r"https?://([^/:]+)", url or "", re.I)
+    if m:
+        h = add_host(target, m.group(1).lower(), source=source)
+        add_edge(target, h["key"], ep["key"], "has_endpoint")
+    return ep
+
+
+def add_finding(
+    target: str,
+    title: str,
+    severity: str = "info",
+    details: str = "",
+    evidence_ref: str = "",
+    attrs: Optional[Dict[str, Any]] = None,
+    source: str = "",
+) -> Dict[str, Any]:
+    identity = f"{severity}:{title}:{details[:80]}"
+    node = upsert_node(target, "finding", identity, {
+        "title": title, "severity": severity, "details": details[:2000],
+        "evidence_ref": evidence_ref, **(attrs or {}),
+    }, source=source)
+    return node
+
+
+def link(target: str, src_kind: str, src_id: str, dst_kind: str, dst_id: str, rel: str) -> bool:
+    graph = _load(target)
+    sk = _node_key(src_kind, src_id)
+    dk = _node_key(dst_kind, dst_id)
+    if sk not in graph["nodes"] or dk not in graph["nodes"]:
+        return False
+    add_edge(target, sk, dk, rel)
+    return True
+
+
+def query(target: str, kind: str = "", text: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+    graph = _load(target)
+    needle = (text or "").lower().strip()
+    out: List[Dict[str, Any]] = []
+    for node in graph.get("nodes", {}).values():
+        if kind and node.get("kind") != kind:
+            continue
+        if needle:
+            hay = json.dumps(node, ensure_ascii=False).lower()
+            if needle not in hay:
+                continue
+        out.append(node)
+    out.sort(key=lambda n: float(n.get("last_seen") or 0), reverse=True)
+    return out[:max(0, limit)]
+
+
+def summary(target: str) -> Dict[str, Any]:
+    graph = _load(target)
+    counts: Dict[str, int] = {}
+    for node in graph.get("nodes", {}).values():
+        k = str(node.get("kind") or "unknown")
+        counts[k] = counts.get(k, 0) + 1
+    return {
+        "target": graph.get("target", target),
+        "slug": graph.get("slug", slugify(target)),
+        "path": str(graph_path(target)),
+        "updated_at": graph.get("updated_at"),
+        "counts": counts,
+        "edges": len(graph.get("edges") or []),
+        "recent_findings": [
+            {
+                "severity": n.get("attrs", {}).get("severity"),
+                "title": n.get("attrs", {}).get("title"),
+                "details": (n.get("attrs", {}).get("details") or "")[:160],
+            }
+            for n in query(target, kind="finding", limit=10)
+        ],
+    }
+
+
+def list_targets(limit: int = 50) -> List[Dict[str, Any]]:
+    if not ROOT.exists():
+        return []
+    items = []
+    for path in ROOT.glob("*/graph.json"):
+        try:
+            data = json.loads(path.read_text())
+            nodes = data.get("nodes") or {}
+            counts: Dict[str, int] = {}
+            for n in nodes.values():
+                k = str(n.get("kind") or "unknown")
+                counts[k] = counts.get(k, 0) + 1
+            items.append({
+                "target": data.get("target") or path.parent.name,
+                "slug": data.get("slug") or path.parent.name,
+                "updated_at": data.get("updated_at") or 0,
+                "counts": counts,
+                "path": str(path),
+            })
+        except Exception:
+            continue
+    items.sort(key=lambda x: float(x.get("updated_at") or 0), reverse=True)
+    return items[:max(0, limit)]
+
+
+def merge(target: str, other_graph: Dict[str, Any], source: str = "merge") -> Dict[str, Any]:
+    """Additively merge another graph/export into target. Never deletes."""
+    graph = _load(target)
+    key_map: Dict[str, str] = {}
+    for node in (other_graph.get("nodes") or {}).values():
+        kind = str(node.get("kind") or "unknown")
+        identity = str(node.get("id") or node.get("key") or "")
+        if not identity:
+            continue
+        new_node = upsert_node(target, kind, identity, node.get("attrs") or {}, source=source)
+        key_map[str(node.get("key") or "")] = new_node["key"]
+    graph = _load(target)
+    for edge in other_graph.get("edges") or []:
+        src = key_map.get(str(edge.get("src") or ""))
+        dst = key_map.get(str(edge.get("dst") or ""))
+        rel = str(edge.get("rel") or "related")
+        if src and dst:
+            existing = {(e.get("src"), e.get("dst"), e.get("rel")) for e in graph.get("edges", [])}
+            if (src, dst, rel) not in existing:
+                graph.setdefault("edges", []).append({"src": src, "dst": dst, "rel": rel, "ts": _now()})
+    graph["edges"] = (graph.get("edges") or [])[-2000:]
+    _save(target, graph)
+    return summary(target)

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+PROJ="$HOME/Desktop/darkgpt/DarkGPT"
+export PYTHONPATH="$PROJ${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PROJ/.venv/bin/python" -m tui.app "$@"

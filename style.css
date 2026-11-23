@@ -1,0 +1,213 @@
+/* DarkGPT — ChatGPT-like shell.
+   Streamlit elements are targeted by data-testid; class names are generated. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+html, body, [data-testid="stAppViewContainer"], [class*="css"] {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+#MainMenu, footer { visibility: hidden; }
+header[data-testid="stHeader"] { background: transparent; height: 0; }
+[data-testid="stDecoration"],
+[data-testid="stToolbar"],
+[data-testid="stStatusWidget"],
+.stDeployButton { display: none !important; }
+
+.block-container {
+    max-width: 768px;
+    padding-top: 1.25rem;
+    padding-bottom: 8rem;
+}
+
+/* ------------------------------------------------------------------ sidebar */
+
+section[data-testid="stSidebar"] {
+    background: #f9f9f9;
+    border-right: 1px solid #ececec;
+}
+section[data-testid="stSidebar"] > div { padding-top: .6rem; }
+
+.dg-brand {
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    margin: .1rem 0 .8rem .15rem;
+    color: #0d0d0d;
+}
+.dg-brand-mark { color: #10a37f; margin-right: .3rem; }
+
+.dg-side-label {
+    font-size: .7rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: #8e8e8e;
+    margin: .7rem 0 .3rem .2rem;
+    font-weight: 500;
+}
+
+/* Sidebar buttons read as list rows, not widgets. */
+section[data-testid="stSidebar"] div.stButton > button {
+    border: none !important;
+    background: transparent;
+    box-shadow: none !important;
+    justify-content: flex-start;
+    text-align: left;
+    padding: .35rem .55rem;
+    border-radius: 8px;
+    font-size: .865rem;
+    font-weight: 400;
+    color: #1a1a1a;
+    min-height: 2rem;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+section[data-testid="stSidebar"] div.stButton > button:hover {
+    background: #ececec;
+    color: #0d0d0d;
+}
+section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+    background: #0d0d0d !important;
+    color: #ffffff !important;
+    font-weight: 500;
+    justify-content: center;
+    margin-bottom: .4rem;
+}
+section[data-testid="stSidebar"] div.stButton > button[kind="primary"]:hover {
+    background: #2f2f2f !important;
+}
+
+/* ---------------------------------------------------------------- main area */
+
+.dg-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: .55rem;
+    border-bottom: 1px solid #ececec;
+    margin-bottom: 1.1rem;
+}
+.dg-title { font-weight: 600; font-size: .98rem; color: #0d0d0d; }
+.dg-badge {
+    font-size: .72rem;
+    color: #4d4d4d;
+    background: #f1f1f1;
+    border-radius: 999px;
+    padding: .18rem .6rem;
+    white-space: nowrap;
+}
+.dg-badge::before { content: "model · "; color: #9b9b9b; }
+
+.dg-hero { text-align: center; margin: 10vh auto 1.6rem; max-width: 560px; }
+.dg-hero-mark { font-size: 2.1rem; color: #10a37f; line-height: 1; }
+.dg-hero h1 { font-size: 1.85rem; font-weight: 600; margin: .5rem 0 .55rem; color: #0d0d0d; }
+.dg-hero p { color: #6b6b6b; font-size: .93rem; line-height: 1.5; margin: 0; }
+
+.dg-footnote {
+    text-align: center;
+    color: #a2a2a2;
+    font-size: .71rem;
+    line-height: 1.4;
+    margin-top: 1.6rem;
+}
+
+/* ------------------------------------------------------------------- chat */
+
+[data-testid="stChatMessage"] {
+    background: transparent;
+    border: none;
+    padding: .5rem 0;
+    gap: .7rem;
+}
+
+/* User turns get the grey pill on the right, like ChatGPT. The reliable hook is
+   aria-label on the content wrapper; the emotion class is a fallback. */
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageContent"][aria-label*="from user"]) {
+    justify-content: flex-end;
+}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageContent"][aria-label*="from user"]) > div:first-child {
+    display: none; /* no avatar on user turns */
+}
+[data-testid="stChatMessageContent"][aria-label*="from user"],
+[data-testid="stChatMessage"].st-emotion-cache-1c7y2kd [data-testid="stChatMessageContent"] {
+    background: #f4f4f4;
+    border-radius: 18px;
+    padding: .6rem 1rem;
+    max-width: 82%;
+    margin-left: auto;
+}
+
+[data-testid="stChatMessage"] p { margin-bottom: .25rem; }
+[data-testid="stChatMessage"] pre {
+    border-radius: 10px;
+    font-size: .84rem;
+    background: #0d0d0d;
+}
+[data-testid="stChatMessage"] code { font-size: .84rem; }
+
+/* --------------------------------------------------------------- composer */
+
+[data-testid="stChatInput"] > div {
+    border-radius: 26px;
+    border: 1px solid #d9d9d9;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .04);
+    background: #ffffff;
+}
+[data-testid="stChatInput"] > div:focus-within {
+    border-color: #b4b4b4;
+    box-shadow: 0 2px 14px rgba(0, 0, 0, .07);
+}
+[data-testid="stChatInputTextArea"] { font-size: .94rem; }
+
+/* Compact the file uploader so it sits above the composer quietly. */
+[data-testid="stFileUploaderDropzone"] {
+    background: #fafafa;
+    border: 1px dashed #dddddd;
+    border-radius: 12px;
+    padding: .35rem .7rem;
+    min-height: 2.25rem;
+    align-items: center;
+}
+[data-testid="stFileUploaderDropzone"]:hover { border-color: #c4c4c4; }
+[data-testid="stFileUploaderDropzoneInstructions"] span,
+[data-testid="stFileUploaderDropzoneInstructions"] small { font-size: .78rem; }
+[data-testid="stFileUploaderDropzoneInstructions"] > div > span { display: none; }
+
+/* ------------------------------------------------------------------ widgets */
+
+div.stButton > button {
+    border-radius: 10px;
+    border: 1px solid #e4e4e4;
+    background: #ffffff;
+    color: #1a1a1a;
+    font-size: .88rem;
+    padding: .5rem .9rem;
+    transition: background .12s ease, border-color .12s ease;
+}
+div.stButton > button:hover:not([kind="primary"]) {
+    background: #fafafa;
+    border-color: #cfcfcf;
+    color: #0d0d0d;
+}
+div.stButton > button[kind="primary"] {
+    background: #10a37f;
+    border-color: #10a37f;
+    color: #ffffff;
+    font-weight: 500;
+}
+div.stButton > button[kind="primary"]:hover {
+    background: #0e8f6f;
+    border-color: #0e8f6f;
+}
+
+[data-testid="stExpander"] {
+    border: 1px solid #ececec;
+    border-radius: 12px;
+    background: #ffffff;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] { background: #ffffff; }
+
+[data-testid="stAlert"] { border-radius: 10px; font-size: .85rem; }
