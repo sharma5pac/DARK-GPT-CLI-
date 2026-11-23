@@ -53,6 +53,7 @@ from agent import (
     skills as skills_util,
     subagents,
 )
+from agent.jobs import JobManager
 
 MAX_TOOL_OUTPUT = 12000
 DEFAULT_MAX_STEPS = int(appconfig.get("max_steps", 28) or 28)
@@ -289,6 +290,7 @@ class ToolRegistry:
         self.skills = skills
         self.ask_callback = ask_callback
         self.approved: set[str] = set()
+        self.jobs = JobManager()
 
     def local_specs(self) -> List[Dict[str, Any]]:
         return [
@@ -331,6 +333,11 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "report_generate", "description": "Generate a pentest report from the target knowledge graph and evidence ledger. Formats: markdown, html, json, csv. JSON includes execution trace; CSV exports findings.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "html", "json", "csv"]}, "out": {"type": "string"}}, "required": []}}},
             {"type": "function", "function": {"name": "planner_update", "description": "Update per-target adaptive planner state. Use after probes/observations to record observed signal, hypothesis delta, and next action. Also manage objective, hypotheses, tasks, and dead ends.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "action": {"type": "string", "enum": ["summary", "set_objective", "add_hypothesis", "add_task", "observe", "dead_end"]}, "objective": {"type": "string"}, "text": {"type": "string"}, "title": {"type": "string"}, "status": {"type": "string"}, "owner": {"type": "string"}, "notes": {"type": "string"}, "confidence": {"type": "number"}, "evidence_ref": {"type": "string"}, "tool": {"type": "string"}, "observed": {"type": "string"}, "hypothesis_delta": {"type": "string"}, "next_action": {"type": "string"}, "signature": {"type": "string"}, "reason": {"type": "string"}, "pivot": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "recon_orchestrate", "description": "Parallel recon: spawns read-only subagents for subdomains, ports/services, tech fingerprinting, endpoints, then merges findings into the target knowledge graph. Requires an active target.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "focus": {"type": "string"}, "workers": {"type": "array", "items": {"type": "string", "enum": ["subdomains", "ports", "tech", "endpoints"]}}}, "required": []}}},
+            {"type": "function", "function": {"name": "task_start", "description": "Start a background task (shell command or script) and return immediately with a job id. Use this to fire multiple scripts/tasks in parallel instead of waiting on one terminal. Monitor with task_list/task_wait/task_log/task_kill.", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["shell", "script"], "description": "shell runs command; script writes+runs python/bash code."}, "command": {"type": "string", "description": "For kind=shell: bash command to run."}, "language": {"type": "string", "enum": ["python", "bash"], "description": "For kind=script."}, "code": {"type": "string", "description": "For kind=script: complete runnable code."}, "args": {"type": "array", "items": {"type": "string"}, "description": "Optional script args."}, "label": {"type": "string", "description": "Short human label."}}, "required": ["kind"]}}},
+            {"type": "function", "function": {"name": "task_list", "description": "List background tasks/jobs with status, exit code, duration, and log path.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}}},
+            {"type": "function", "function": {"name": "task_wait", "description": "Wait for one or more background task IDs to finish (or timeout). Returns their status and tail output. Use after firing parallel tasks.", "parameters": {"type": "object", "properties": {"job_ids": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds to wait, default 30, max 300."}}, "required": ["job_ids"]}}},
+            {"type": "function", "function": {"name": "task_log", "description": "Get tail output/log for a background task.", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}, "tail": {"type": "integer"}}, "required": ["job_id"]}}},
+            {"type": "function", "function": {"name": "task_kill", "description": "Kill a running background task.", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]}}},
         ]
 
     def specs(self) -> List[Dict[str, Any]]:
@@ -475,6 +482,29 @@ class ToolRegistry:
                 return clamp(json.dumps(await asyncio.to_thread(self._run_planner, args), ensure_ascii=False))
             if name == "recon_orchestrate":
                 return clamp(json.dumps(await self._run_recon_orchestrate(args, on_event=on_event), ensure_ascii=False))
+            if name == "task_start":
+                kind = str(args.get("kind") or "shell").strip().lower()
+                label = str(args.get("label") or "")
+                cwd = os.getcwd()
+                if kind == "script":
+                    return clamp(json.dumps(await self.jobs.start_script(
+                        str(args.get("language") or "python"),
+                        str(args.get("code") or ""),
+                        list(args.get("args") or []),
+                        cwd=cwd,
+                        label=label,
+                    ), ensure_ascii=False))
+                return clamp(json.dumps(await self.jobs.start_shell(str(args.get("command") or ""), cwd=cwd, label=label), ensure_ascii=False))
+            if name == "task_list":
+                return clamp(json.dumps(self.jobs.list(limit=int(args.get("limit", 20))), ensure_ascii=False))
+            if name == "task_wait":
+                ids = args.get("job_ids") or []
+                if isinstance(ids, str): ids = [ids]
+                return clamp(json.dumps(await self.jobs.wait([str(i) for i in ids], timeout=int(args.get("timeout", 30))), ensure_ascii=False))
+            if name == "task_log":
+                return clamp(json.dumps(self.jobs.log(str(args.get("job_id") or ""), tail=int(args.get("tail", 4000))), ensure_ascii=False))
+            if name == "task_kill":
+                return clamp(json.dumps(await self.jobs.kill(str(args.get("job_id") or "")), ensure_ascii=False))
             if name.startswith("mcp__"):
                 _, server, tool = name.split("__", 2)
                 if not self.mcp:
@@ -1001,6 +1031,12 @@ HOW YOU THINK
   Scripts are faster, repeatable, easier to debug, and kept as evidence under
   ~/.cache/darkgpt/scripts. Use Python for HTTP/JSON/HTML/regex/stateful logic; bash
   for quick CLI pipelines. Do not do slow manual step-by-step when a script can do it.
+- **PARALLEL BY DEFAULT:** Do not wait on one terminal/script when work can be split.
+  Fire multiple background tasks with `task_start` (shell or script), continue other work,
+  then `task_wait`/`task_log`/`task_list` to collect results. Use this for independent
+  recon targets, multiple endpoints, different fuzzers/parsers, or long-running scans.
+  Prefer 2-5 focused parallel tasks over one slow serial chain. For quick single jobs,
+  normal `script`/`shell` is fine.
 - Use shell/run_commands for quick one-offs; use browser for JS-rendered interaction;
   use script when you need control flow, parsing, retries, or many targets.
 - Use delegate (or spawn_agent) to parallelise independent exploration, review and
@@ -1038,6 +1074,7 @@ HOW YOU GET WHAT YOU NEED (DO NOT STOP AT THE FIRST FAILURE)
   4. MCP/web-fuzz tools (kala-mcp-root: ffuf, dirb, wfuzz, urlcrazy, parsero, etc.)
      for specialized scanning/fuzzing when available.
   5. `delegate`/`spawn_agent` for independent parallel routes.
+  For independent tasks, fire them in parallel with `task_start` and collect with `task_wait`.
   Keep a short note of what you tried; change route on failure.
 - Treat every failure as information: read the status/error, then change exactly
   one thing — URL, headers, engine, selector, session state, or whole method.

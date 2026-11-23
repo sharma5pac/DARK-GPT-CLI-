@@ -85,6 +85,17 @@ def risk_of(tool: str, args: Dict[str, Any] | None = None) -> str:
     if tool == "run_commands":
         commands = " ".join(str(c) for c in _command_strings(args.get("commands")))
         return "danger" if DANGEROUS_RE.search(commands) else "shell"
+    if tool == "task_start":
+        kind = str(args.get("kind") or "shell").lower()
+        if kind == "script":
+            code = str(args.get("code") or "")
+            return "danger" if DANGEROUS_RE.search(code) else "shell"
+        command = str(args.get("command") or "")
+        return "danger" if DANGEROUS_RE.search(command) else "shell"
+    if tool == "task_kill":
+        return "write"
+    if tool in ("task_list", "task_wait", "task_log"):
+        return "safe"
     if tool in WRITE_TOOLS:
         # lsp_rename preview writes nothing.
         if tool == "lsp_rename" and not args.get("apply"):
@@ -161,6 +172,13 @@ def describe(tool: str, args: Dict[str, Any] | None, risk: str) -> str:
         return f"Modify file ({risk}):\n{args.get('path', '?')}"
     if tool == "run_commands":
         return "Run shell commands (" + risk + "):\n" + "\n".join(_command_strings(args.get("commands")))[:500]
+    if tool == "task_start":
+        kind = str(args.get("kind") or "shell").lower()
+        if kind == "script":
+            return f"Start background script ({risk}):\n{str(args.get('code') or '')[:500]}"
+        return f"Start background command ({risk}):\n{str(args.get('command') or '')[:500]}"
+    if tool == "task_kill":
+        return f"Kill background task: {args.get('job_id')}"
     if tool == "fetch_web_content":
         urls = [str(r.get("url")) for r in _listify(args.get("requests")) if isinstance(r, dict)]
         return f"Fetch web content ({risk}):\n" + "\n".join(urls)[:500]
