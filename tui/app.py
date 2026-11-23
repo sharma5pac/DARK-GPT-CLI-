@@ -418,7 +418,7 @@ class ActivitySpinner(Static):
     connects or runs tools — not a static line waiting for the next event.
     """
 
-    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    FRAMES = "-\\|/"
 
     def __init__(self) -> None:
         super().__init__()
@@ -1674,6 +1674,10 @@ class DarkGPTApp(App):
             pass
         self.query_one("#palette", OptionList).display = False
         self.query_one("#prompt-input", PromptArea).focus()
+        try:
+            self.query_one("#liveness-bar", Static).update(Text("ready", style="#555555"))
+        except Exception:
+            pass
         self.run_worker(self._start_mcp(), exclusive=False)
         self.refresh_status()
         self.update_context()
@@ -3126,7 +3130,7 @@ class DarkGPTApp(App):
         return choice == "once"
 
     # ---------------------------------------------------------------- liveness
-    _LIVENESS_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    _LIVENESS_FRAMES = "-\\|/"
 
     def _liveness_paint(self) -> None:
         try:
@@ -3159,7 +3163,7 @@ class DarkGPTApp(App):
             pass
         if self._liveness_timer is None:
             try:
-                self._liveness_timer = self.set_interval(0.1, self._liveness_tick)
+                self._liveness_timer = self.set_interval(0.25, self._liveness_tick)
             except Exception:
                 self._liveness_timer = None
         self._liveness_paint()
@@ -3175,7 +3179,7 @@ class DarkGPTApp(App):
         try:
             bar = self.query_one("#liveness-bar", Static)
             bar.remove_class("active")
-            bar.update("")
+            bar.update(Text("ready", style="#555555"))
         except Exception:
             pass
 

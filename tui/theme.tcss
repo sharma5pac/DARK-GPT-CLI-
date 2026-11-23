@@ -104,15 +104,15 @@ Screen {
 /* -------------------------------------------------------------- liveness */
 
 #liveness-bar {
-    display: none;
     height: 1;
     padding: 0 2;
-    background: #1a1408;
-    color: #e5a93c;
+    background: #0d0d0d;
+    color: #6f6f6f;
 }
 
 #liveness-bar.active {
-    display: block;
+    background: #1a1408;
+    color: #e5a93c;
 }
 
 /* ----------------------------------------------------------------- prompt */
