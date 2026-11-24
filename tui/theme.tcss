@@ -328,8 +328,10 @@ PhaseTimeline {
     margin: 1 0;
     padding: 1;
     height: auto;
-    border: round #2f4a3a;
-    background: #101613;
+    border: round #2f6b4a;
+    border-left: thick #49c17e;
+    background: #12251b;
+    color: #dff3e6;
 }
 
 ChatMessage Markdown, .msg-assistant Markdown {
@@ -341,6 +343,7 @@ ChatMessage Markdown, .msg-assistant Markdown {
 
 ChatMessage {
     height: auto;
+    transition: offset 220ms in_out_cubic, opacity 220ms in_out_cubic;
 }
 
 ChatMessage Static {

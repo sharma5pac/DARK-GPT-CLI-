@@ -648,6 +648,7 @@ class ChatMessage(Vertical):
         self._md: Markdown | None = None
         self._user_text: Static | None = None
         self._meta: Static | None = None
+        self._entered = False
 
     def on_mount(self) -> None:
         self.render_msg()
@@ -669,8 +670,29 @@ class ChatMessage(Vertical):
         else:
             self._meta.update(self._meta_text())
 
+    def _enter(self) -> None:
+        """Fade/slide a completed or newly-started message into view once."""
+        if self._entered:
+            return
+        self._entered = True
+        try:
+            self.styles.offset = (0, 1)
+            self.styles.opacity = 0
+            self.call_after_refresh(self._settle)
+        except Exception:
+            pass
+
+    def _settle(self) -> None:
+        try:
+            self.styles.offset = (0, 0)
+            self.styles.opacity = 1
+        except Exception:
+            pass
+
     def render_msg(self) -> None:
         self._ensure_meta()
+        if (self.raw_content or "").strip():
+            self._enter()
         if self.role == "user":
             self.remove_class("msg-assistant")
             self.add_class("msg-user")
