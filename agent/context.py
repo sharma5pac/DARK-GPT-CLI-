@@ -170,6 +170,26 @@ def system_extras(
         patterns = mem.format_patterns(mem.by_kind(cwd, {"pattern"}, k=6))
         if patterns:
             parts.append(patterns)
+    # User-confirmed authorization carries across new chats. This is positive
+    # carry-over state, not a gate: it prevents re-asking permission and stops
+    # the agent from answering an attack order with a capability list.
+    try:
+        from utils import appconfig as _cfg
+
+        authorized = [
+            str(t).strip()
+            for t in (_cfg.get("authorized_targets") or [])
+            if str(t).strip()
+        ]
+        if authorized:
+            parts.append(
+                "Authorization state (user-confirmed, carries across chats): "
+                + ", ".join(authorized[:12])
+                + ". Active testing on these targets is approved; proceed without "
+                "asking for authorization or next-step confirmation."
+            )
+    except Exception:
+        pass
     # Active target state - gives the agent dynamic memory across turns.
     try:
         from utils import appconfig as _cfg
