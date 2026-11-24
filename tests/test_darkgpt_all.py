@@ -358,16 +358,16 @@ async def check_session_picker_delete():
                 assert str(option_list.options[0].id) == f"db:{cid}"
                 ok("session picker lists chats by first request")
 
-                await pilot.press("d"); await pilot.pause()
+                await pilot.press("delete"); await pilot.pause()
                 assert isinstance(app.screen, A.ConfirmScreen), type(app.screen)
-                await pilot.click("#confirm-yes")
+                await pilot.press("enter")
                 for _ in range(30):
                     await pilot.pause()
                     if H.get_conversation(cid) is None:
                         break
                 assert H.get_conversation(cid) is None, "delete button did not remove chat"
                 assert isinstance(app.screen, A.SessionPickerScreen), type(app.screen)
-                ok("session picker Delete chat button works with confirmation")
+                ok("Delete key + Enter removes the selected chat")
                 await pilot.press("escape"); await pilot.pause()
         finally:
             H.DB_PATH = original_db
@@ -404,16 +404,18 @@ async def check_arrow_navigation():
         ok("skills manager arrow navigation starts highlighted")
         await pilot.press("escape"); await pilot.pause()
 
-        # Left/Right move focus across confirmation buttons.
-        app.push_screen(A.ConfirmScreen("DELETE?"), lambda _: None)
+        # Left/Right move focus across confirmation buttons; Enter confirms.
+        confirmed: List[bool] = []
+        app.push_screen(A.ConfirmScreen("DELETE?"), lambda value: confirmed.append(bool(value)))
         await pilot.pause()
-        assert getattr(app.focused, "id", "") == "confirm-no", getattr(app.focused, "id", "")
-        await pilot.press("right"); await pilot.pause()
         assert getattr(app.focused, "id", "") == "confirm-yes", getattr(app.focused, "id", "")
-        await pilot.press("left"); await pilot.pause()
+        await pilot.press("right"); await pilot.pause()
         assert getattr(app.focused, "id", "") == "confirm-no", getattr(app.focused, "id", "")
-        ok("confirmation buttons navigate with Left/Right")
-        await pilot.press("escape"); await pilot.pause()
+        await pilot.press("left"); await pilot.pause()
+        assert getattr(app.focused, "id", "") == "confirm-yes", getattr(app.focused, "id", "")
+        await pilot.press("enter"); await pilot.pause()
+        assert confirmed == [True], confirmed
+        ok("confirmation: Left/Right navigate, Enter confirms")
 
         # Arrows from a custom-answer field still move the option highlight.
         app.push_screen(A.AskQuestionScreen("pick", ["one", "two", "three"]), lambda _: None)

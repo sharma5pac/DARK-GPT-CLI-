@@ -934,7 +934,12 @@ class PromptArea(TextArea):
 
 
 class ConfirmScreen(ArrowNavMixin, ModalScreen[bool]):
-    BINDINGS = arrow_bindings() + [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = arrow_bindings() + [
+        Binding("enter", "confirm", "Confirm", show=True, priority=True),
+        Binding("y", "confirm", "Confirm", show=False),
+        Binding("n", "cancel", "Cancel", show=False),
+        Binding("escape", "cancel", "Cancel"),
+    ]
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -946,6 +951,11 @@ class ConfirmScreen(ArrowNavMixin, ModalScreen[bool]):
             with Horizontal(classes="button-row"):
                 yield Button("Cancel", id="confirm-no")
                 yield Button("Confirm", id="confirm-yes", variant="error")
+            yield Static("Enter/Y confirm | N/Esc cancel | Left/Right choose", classes="modal-help")
+
+    def on_mount(self) -> None:
+        # Enter should mean "yes" for a destructive confirmation.
+        self.query_one("#confirm-yes", Button).focus()
 
     @on(Button.Pressed, "#confirm-yes")
     def _yes(self) -> None:
@@ -954,6 +964,9 @@ class ConfirmScreen(ArrowNavMixin, ModalScreen[bool]):
     @on(Button.Pressed, "#confirm-no")
     def _no(self) -> None:
         self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
 
     def action_cancel(self) -> None:
         self.dismiss(False)
@@ -1715,7 +1728,9 @@ class SessionPickerScreen(ArrowNavMixin, ModalScreen[Optional[str]]):
 
     BINDINGS = arrow_bindings() + [
         Binding("escape", "cancel", "Cancel"),
-        Binding("d", "delete", "Delete chat", show=True),
+        Binding("delete", "delete", "Delete chat", show=True),
+        Binding("backspace", "delete", "Delete chat", show=False),
+        Binding("d", "delete", "Delete chat", show=False),
     ]
 
     def __init__(self, current_db_id: Optional[int] = None) -> None:
@@ -1730,7 +1745,7 @@ class SessionPickerScreen(ArrowNavMixin, ModalScreen[Optional[str]]):
             with Horizontal(classes="button-row"):
                 yield Button("Delete chat", id="session-delete", classes="-error")
             yield Static(
-                "Enter resume | Up/Down select | D or Delete chat removes the selected history | "
+                "Enter resume | Up/Down select | Delete/Backspace/D remove selected history | "
                 "Esc close | evidence/target files are never removed",
                 classes="modal-help",
             )
