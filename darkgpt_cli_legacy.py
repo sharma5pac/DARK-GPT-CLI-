@@ -96,7 +96,7 @@ def render_tool_start(name: str, args: dict) -> None:
     a = json.dumps(args, ensure_ascii=False)
     if len(a) > 140:
         a = a[:140] + "..."
-    console.print(f"[yellow]⚙ {name}[/yellow] [dim]{a}[/dim]")
+    console.print(f"[yellow][*] {name}[/yellow] [dim]{a}[/dim]")
 
 
 def render_tool_end(name: str, result: str) -> None:
@@ -207,7 +207,7 @@ def main() -> int:
     session = PromptSession(history=FileHistory(HISTORY_FILE))
     while True:
         try:
-            line = session.prompt(HTML("<prompt>❯ </prompt>"), style=PROMPT_STYLE).strip()
+            line = session.prompt(HTML("<prompt>? </prompt>"), style=PROMPT_STYLE).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return 0

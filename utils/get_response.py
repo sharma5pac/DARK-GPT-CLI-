@@ -667,7 +667,7 @@ def _label(model: Dict) -> str:
         ctx_txt = f"{ctx // 1000}k" if ctx < 1_000_000 else f"{ctx // 1_000_000}M"
         suffix = f"  ({ctx_txt} ctx)"
     if model.get("vision"):
-        suffix += "  👁 images"
+        suffix += "  ? images"
     return f"{short}{suffix}"
 
 

@@ -3,7 +3,7 @@
 Talks real LSP JSON-RPC over stdio to pyright / typescript-language-server /
 rust-analyzer / gopls / clangd, giving definitions, references, diagnostics and
 semantic-safe rename. Everything is bounded by hard timeouts and *always*
-degrades to the dependency-free regex/AST fallback in ``agent.codeintel`` — a
+degrades to the dependency-free regex/AST fallback in ``agent.codeintel`` - a
 missing or broken server can never crash the agent.
 
 Design notes

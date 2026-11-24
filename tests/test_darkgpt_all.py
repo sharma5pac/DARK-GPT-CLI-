@@ -227,8 +227,8 @@ async def check_tui():
         assert any(i.startswith("openrouter|") for i in ids), ids
         assert any(i.startswith("nvidia|") for i in ids), ids
         prompts = [str(o.prompt) for o in picker.options]
-        assert any(("OpenRouter" in p and ("--" in p or "──" in p)) for p in prompts), prompts
-        assert any(("NVIDIA" in p and ("--" in p or "──" in p)) for p in prompts), prompts
+        assert any(("OpenRouter" in p and ("--" in p or "--" in p)) for p in prompts), prompts
+        assert any(("NVIDIA" in p and ("--" in p or "--" in p)) for p in prompts), prompts
         await pilot.press("down"); await pilot.pause()
         assert picker.highlighted is not None
         await pilot.press("escape"); await pilot.pause()

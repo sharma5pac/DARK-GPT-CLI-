@@ -170,7 +170,7 @@ def system_extras(
         patterns = mem.format_patterns(mem.by_kind(cwd, {"pattern"}, k=6))
         if patterns:
             parts.append(patterns)
-    # Active target state — gives the agent dynamic memory across turns.
+    # Active target state - gives the agent dynamic memory across turns.
     try:
         from utils import appconfig as _cfg
         from agent import knowledge_graph as kg, evidence as ev, planner as pl
@@ -202,7 +202,7 @@ def system_extras(
                         lines.append(f"- [{it.get('kind')}/{it.get('status')}] {str(it.get('text',''))[:120]}")
             except Exception:
                 pass
-            parts.append("Target state (dynamic memory — update it as you learn):\n" + "\n".join(lines))
+            parts.append("Target state (dynamic memory - update it as you learn):\n" + "\n".join(lines))
     except Exception:
         pass
     return "\n\n".join(parts)

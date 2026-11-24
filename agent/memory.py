@@ -159,7 +159,7 @@ def format_lessons(entries: List[Dict[str, Any]]) -> str:
     """Compact 'do not repeat' block injected into the system prompt."""
     if not entries:
         return ""
-    lines = ["Learned lessons (self-learning — apply before acting):"]
+    lines = ["Learned lessons (self-learning - apply before acting):"]
     for entry in entries:
         kind = str(entry.get("kind") or "lesson")
         text = str(entry.get("text") or "").strip()[:320]

@@ -31,18 +31,18 @@ from utils.get_response import (
 
 st.set_page_config(
     page_title="DarkGPT",
-    page_icon="💬",
+    page_icon="?",
     layout="centered",
     initial_sidebar_state="expanded",
 )
 
-BOT_AVATAR = "🤖"
-USER_AVATAR = "🧑"
+BOT_AVATAR = "?"
+USER_AVATAR = "?"
 SUGGESTIONS = [
-    ("🔐", "Explain a CVE", "Explain how CVE-2021-44228 (Log4Shell) works and what the fix was."),
-    ("📄", "Summarise a file", "Summarise the attached document in five bullet points."),
-    ("💻", "Review code", "Review this code for bugs and security issues, then show a fixed version."),
-    ("🧠", "Explain simply", "Explain how HTTPS actually protects traffic, in plain language."),
+    ("?", "Explain a CVE", "Explain how CVE-2021-44228 (Log4Shell) works and what the fix was."),
+    ("?", "Summarise a file", "Summarise the attached document in five bullet points."),
+    ("?", "Review code", "Review this code for bugs and security issues, then show a fixed version."),
+    ("?", "Explain simply", "Explain how HTTPS actually protects traffic, in plain language."),
 ]
 
 
@@ -120,7 +120,7 @@ def sidebar_model() -> str:
         "Model",
         labels,
         index=index,
-        help="Models marked 👁 images accept pictures. Prices are per million tokens.",
+        help="Models marked ? images accept pictures. Prices are per million tokens.",
     )
     st.session_state["model_id"] = options[choice]
 
@@ -128,8 +128,8 @@ def sidebar_model() -> str:
     paid = len(models) - free_count
     caption = f"{free_count} free"
     if paid:
-        caption += f" · {paid} paid"
-    st.sidebar.caption(caption + " · via OpenRouter")
+        caption += f" | {paid} paid"
+    st.sidebar.caption(caption + " | via OpenRouter")
     return options[choice]
 
 
@@ -141,22 +141,22 @@ def sidebar_conversations() -> None:
         "<div class='dg-side-label'>Chats</div>", unsafe_allow_html=True
     )
     if not rows:
-        st.sidebar.caption("Nothing yet — say hello.")
+        st.sidebar.caption("Nothing yet - say hello.")
         return
 
     for conv in rows:
         title = conv["title"] or "New chat"
         if len(title) > 34:
-            title = title[:34] + "…"
+            title = title[:34] + "..."
         cols = st.sidebar.columns([0.84, 0.16], gap="small")
         if cols[0].button(
-            ("• " if conv["id"] == active else "  ") + title,
+            ("? " if conv["id"] == active else "  ") + title,
             key=f"open_{conv['id']}",
             use_container_width=True,
         ):
             open_chat(conv["id"])
             st.rerun()
-        if cols[1].button("✕", key=f"del_{conv['id']}", help="Delete this chat"):
+        if cols[1].button("?", key=f"del_{conv['id']}", help="Delete this chat"):
             db.delete_conversation(conv["id"])
             if conv["id"] == active:
                 start_new_chat()
@@ -164,16 +164,16 @@ def sidebar_conversations() -> None:
 
 
 def sidebar_settings(api_key_present: bool) -> str | None:
-    with st.sidebar.expander("⚙️ Settings", expanded=not api_key_present):
+    with st.sidebar.expander("[*]? Settings", expanded=not api_key_present):
         pasted = ""
         if api_key_present:
-            st.success("OpenRouter key loaded", icon="🔑")
+            st.success("OpenRouter key loaded", icon="?")
         else:
-            st.warning("No OpenRouter key", icon="🔑")
+            st.warning("No OpenRouter key", icon="?")
             pasted = st.text_input(
                 "OpenRouter API key",
                 type="password",
-                help="Free key from https://openrouter.ai/keys — no card needed.",
+                help="Free key from https://openrouter.ai/keys - no card needed.",
                 key="openrouter_key_input",
             )
             st.caption("Free tier: ~20 requests/min, 50/day per account.")
@@ -192,14 +192,14 @@ def sidebar_settings(api_key_present: bool) -> str | None:
 
 def collect_attachments(model_id: str) -> list:
     """Uploader + per-file parsing, cached by content hash across reruns."""
-    label = "📎 Attach files"
+    label = "? Attach files"
     files = st.file_uploader(
         label,
         type=ACCEPTED_TYPES,
         accept_multiple_files=True,
         help=(
-            "PDF, text, CSV, JSON or code → sent as context. Images → sent as images and "
-            "need a model marked 👁. Nothing is written to disk."
+            "PDF, text, CSV, JSON or code -> sent as context. Images -> sent as images and "
+            "need a model marked ?. Nothing is written to disk."
         ),
         key="attachments_uploader",
         label_visibility="collapsed",
@@ -228,7 +228,7 @@ def collect_attachments(model_id: str) -> list:
         images = [item for item in good if item.get("kind") == "image"]
         if images and not supports_images(model_id):
             st.warning(
-                f"{short_model(model_id)} cannot see images — pick a model marked 👁 images."
+                f"{short_model(model_id)} cannot see images - pick a model marked ? images."
             )
     return good
 
@@ -241,18 +241,18 @@ def render_messages(messages: list) -> None:
         with st.chat_message(role, avatar=BOT_AVATAR if role == "assistant" else USER_AVATAR):
             st.markdown(message["content"])
             if message.get("attachments"):
-                st.caption("📎 " + ", ".join(message["attachments"]))
+                st.caption("? " + ", ".join(message["attachments"]))
 
     # Controls under the last turn.
     if not messages:
         return
     last = messages[-1]
     if last["role"] == "user":
-        if st.button("↻ Try again", key=f"retry_{last['id']}"):
+        if st.button("? Try again", key=f"retry_{last['id']}"):
             st.session_state["pending_retry"] = last["id"]
             st.rerun()
     elif last["role"] in ("assistant", "bot") and len(messages) > 1:
-        if st.button("↻ Regenerate", key=f"regen_{last['id']}"):
+        if st.button("? Regenerate", key=f"regen_{last['id']}"):
             db.delete_message(last["id"])
             previous = messages[-2]
             if previous["role"] == "user":
@@ -287,7 +287,7 @@ def send(prompt: str, attachments: list, model: str, api_key: str | None) -> Non
     with st.chat_message("user", avatar=USER_AVATAR):
         st.markdown(prompt)
         if names:
-            st.caption("📎 " + ", ".join(names))
+            st.caption("? " + ", ".join(names))
 
     api_messages = build_messages(history=history, prompt=prompt, attachments=attachments)
     answer = stream_reply(api_messages, model, api_key)
@@ -329,10 +329,10 @@ def main() -> None:
 
     # Brand + new chat
     st.sidebar.markdown(
-        "<div class='dg-brand'><span class='dg-brand-mark'>◍</span> DarkGPT</div>",
+        "<div class='dg-brand'><span class='dg-brand-mark'>?</span> DarkGPT</div>",
         unsafe_allow_html=True,
     )
-    if st.sidebar.button("＋  New chat", use_container_width=True, type="primary"):
+    if st.sidebar.button("?  New chat", use_container_width=True, type="primary"):
         start_new_chat()
         st.rerun()
     sidebar_conversations()
@@ -360,7 +360,7 @@ def main() -> None:
         render_messages(messages)
     else:
         st.markdown(
-            "<div class='dg-hero'><div class='dg-hero-mark'>◍</div>"
+            "<div class='dg-hero'><div class='dg-hero-mark'>?</div>"
             "<h1>How can I help?</h1>"
             "<p>Ask anything. Attach a PDF, a file or an image below. "
             "The thread is remembered, and it is saved when you come back.</p></div>",
@@ -379,7 +379,7 @@ def main() -> None:
         retry(pending_retry, model, api_key)
 
     attachments = collect_attachments(model)
-    prompt = st.chat_input("Message DarkGPT…")
+    prompt = st.chat_input("Message DarkGPT...")
     pending_prompt = st.session_state.pop("pending_prompt", None)
     prompt = prompt or pending_prompt
 
@@ -388,7 +388,7 @@ def main() -> None:
 
     st.markdown(
         "<div class='dg-footnote'>DarkGPT runs on OpenRouter. Free models may use your "
-        "prompts for training — do not paste client or personal data.",
+        "prompts for training - do not paste client or personal data.",
         unsafe_allow_html=True,
     )
 

@@ -3,10 +3,10 @@
 Every duration reported to the UI is measured with ``time.perf_counter()`` at
 the exact lifecycle boundary:
 
-* connecting  — request dispatch -> first SSE event
-* thinking    — first reasoning token -> first content/tool token (or stream end)
-* writing     — first content token -> stream end
-* tool        — tool dispatch -> tool result
+* connecting  - request dispatch -> first SSE event
+* thinking    - first reasoning token -> first content/tool token (or stream end)
+* writing     - first content token -> stream end
+* tool        - tool dispatch -> tool result
 
 The UI never has to guess or back-calculate these values.
 """
@@ -322,7 +322,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "lsp_diagnostics", "description": "Get type/compile diagnostics (errors, warnings) for a file from the language server or project compiler", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
             {"type": "function", "function": {"name": "lsp_rename", "description": "Semantic rename across the workspace using LSP. Preview by default; pass apply=true to write changes", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}, "new_name": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "apply": {"type": "boolean"}}, "required": ["path", "symbol", "new_name"]}}},
             {"type": "function", "function": {"name": "delegate", "description": "Spawn an isolated read-only subagent (explore/review/test) to work on a focused task in parallel; returns a concise report", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
-            {"type": "function", "function": {"name": "script", "description": "PREFERRED for speed: write and RUN a Python or bash helper script in one call. Use this first for recon/enumeration/fuzzing/parsing/bulk checks/multi-step automation/report building/data transforms—anything that would take multiple shell/read/grep/browser calls. Scripts are faster, repeatable, and saved as evidence under ~/.cache/darkgpt/scripts. Return exit_code, output, script_path. Use python for parsing/HTTP/JSON/logic; bash for quick CLI pipelines. Keep scripts focused; print clear findings.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string", "description": "Complete runnable script. Include imports/shebang assumptions as needed; print actionable output."}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds, default 30, max 120."}}, "required": ["language", "code"]}}},
+            {"type": "function", "function": {"name": "script", "description": "PREFERRED for speed: write and RUN a Python or bash helper script in one call. Use this first for recon/enumeration/fuzzing/parsing/bulk checks/multi-step automation/report building/data transforms-anything that would take multiple shell/read/grep/browser calls. Scripts are faster, repeatable, and saved as evidence under ~/.cache/darkgpt/scripts. Return exit_code, output, script_path. Use python for parsing/HTTP/JSON/logic; bash for quick CLI pipelines. Keep scripts focused; print clear findings.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string", "description": "Complete runnable script. Include imports/shebang assumptions as needed; print actionable output."}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds, default 30, max 120."}}, "required": ["language", "code"]}}},
             # ---- Cline-compatible built-in tools ---------------------------------
             {"type": "function", "function": {"name": "read_files", "description": "Cline-style batch file reader. Read several files (or line ranges) in one call. Accepts a path string, an array of paths, or {files:[{path,start_line,end_line}]} (also paths/file_paths). Line numbers are 1-based and inclusive.", "parameters": {"type": "object", "properties": {"files": {"description": "Path string, array of paths, or array of objects with path and optional 1-based inclusive start_line/end_line."}}, "required": ["files"]}}},
             {"type": "function", "function": {"name": "search_codebase", "description": "Cline-style batch codebase search. Run several grep extended-regex queries at once and return per-query matches with file:line. Prefer this over many separate grep calls.", "parameters": {"type": "object", "properties": {"queries": {"description": "A regex string or array of regex strings to search for."}}, "required": ["queries"]}}},
@@ -335,7 +335,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "ask_question", "description": "Cline-style clarifying question. Ask the user ONE question with 2-5 selectable options when the requirement is genuinely ambiguous. The user's answer is returned to you. Do not use it for questions you can answer by inspecting the workspace.", "parameters": {"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}, "description": "2-5 short answer choices."}}, "required": ["question", "options"]}}},
             {"type": "function", "function": {"name": "submit_and_exit", "description": "Cline-style completion signal. Call this ONLY when the task is finished and verified. Pass the final summary and whether you verified it; the turn ends immediately with that summary.", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}, "verified": {"type": "boolean"}}, "required": ["summary", "verified"]}}},
             {"type": "function", "function": {"name": "spawn_agent", "description": "Alias of delegate: spawn one isolated read-only subagent (explore/review/test) for a focused parallel task. Returns a concise report.", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
-            {"type": "function", "function": {"name": "knowledge_graph", "description": "Persist and query a per-target knowledge graph (hosts→services→endpoints→findings/auth/creds/params). Use it to record recon so work resumes across turns. Findings: status attempted|proved|false_positive; proved requires evidence_ref present in evidence ledger. Actions: summary, list_targets, add_host, add_service, add_endpoint, add_finding, link, query, merge.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "list_targets", "add_host", "add_service", "add_endpoint", "add_finding", "add_credential", "add_auth_state", "add_param", "add_fingerprint", "link", "query", "merge", "export"]}, "target": {"type": "string"}, "host": {"type": "string"}, "port": {"type": "integer"}, "proto": {"type": "string"}, "url": {"type": "string"}, "title": {"type": "string"}, "severity": {"type": "string"}, "status": {"type": "string", "enum": ["attempted", "proved", "false_positive"]}, "details": {"type": "string"}, "evidence_ref": {"type": "string"}, "asset": {"type": "string"}, "repro": {"type": "string"}, "impact": {"type": "string"}, "remediation": {"type": "string"}, "confidence": {"type": "number"}, "name": {"type": "string"}, "kind": {"type": "string"}, "state": {"type": "string"}, "location": {"type": "string"}, "fingerprint": {"type": "string"}, "src_kind": {"type": "string"}, "src_id": {"type": "string"}, "dst_kind": {"type": "string"}, "dst_id": {"type": "string"}, "rel": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}, "attrs": {"type": "object"}, "source": {"type": "string"}, "graph": {"type": "object"}, "format": {"type": "string"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "knowledge_graph", "description": "Persist and query a per-target knowledge graph (hosts->services->endpoints->findings/auth/creds/params). Use it to record recon so work resumes across turns. Findings: status attempted|proved|false_positive; proved requires evidence_ref present in evidence ledger. Actions: summary, list_targets, add_host, add_service, add_endpoint, add_finding, link, query, merge.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "list_targets", "add_host", "add_service", "add_endpoint", "add_finding", "add_credential", "add_auth_state", "add_param", "add_fingerprint", "link", "query", "merge", "export"]}, "target": {"type": "string"}, "host": {"type": "string"}, "port": {"type": "integer"}, "proto": {"type": "string"}, "url": {"type": "string"}, "title": {"type": "string"}, "severity": {"type": "string"}, "status": {"type": "string", "enum": ["attempted", "proved", "false_positive"]}, "details": {"type": "string"}, "evidence_ref": {"type": "string"}, "asset": {"type": "string"}, "repro": {"type": "string"}, "impact": {"type": "string"}, "remediation": {"type": "string"}, "confidence": {"type": "number"}, "name": {"type": "string"}, "kind": {"type": "string"}, "state": {"type": "string"}, "location": {"type": "string"}, "fingerprint": {"type": "string"}, "src_kind": {"type": "string"}, "src_id": {"type": "string"}, "dst_kind": {"type": "string"}, "dst_id": {"type": "string"}, "rel": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}, "attrs": {"type": "object"}, "source": {"type": "string"}, "graph": {"type": "object"}, "format": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "evidence_log", "description": "Append a manual observation to the per-target append-only evidence ledger (JSONL) with SHA-256 and stable evidence id. Tool results are auto-captured when a target is active.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "tool": {"type": "string"}, "args": {}, "result": {"type": "string"}, "ok": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["tool", "result"]}}},
             {"type": "function", "function": {"name": "report_generate", "description": "Generate a pentest report from the target knowledge graph and evidence ledger. Formats: markdown, html, json, csv. JSON includes execution trace; CSV exports findings.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "html", "json", "csv"]}, "out": {"type": "string"}}, "required": []}}},
             {"type": "function", "function": {"name": "planner_update", "description": "Update per-target adaptive planner state. Use after probes/observations to record observed signal, hypothesis delta, and next action. Also manage objective, hypotheses, tasks, and dead ends.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "action": {"type": "string", "enum": ["summary", "set_objective", "add_hypothesis", "add_task", "observe", "dead_end"]}, "objective": {"type": "string"}, "text": {"type": "string"}, "title": {"type": "string"}, "status": {"type": "string"}, "owner": {"type": "string"}, "notes": {"type": "string"}, "confidence": {"type": "number"}, "evidence_ref": {"type": "string"}, "tool": {"type": "string"}, "observed": {"type": "string"}, "hypothesis_delta": {"type": "string"}, "next_action": {"type": "string"}, "signature": {"type": "string"}, "reason": {"type": "string"}, "pivot": {"type": "string"}}, "required": ["action"]}}},
@@ -1348,7 +1348,7 @@ class ToolRegistry:
 
 
 SYSTEM = """You are DarkGPT, the senior engineer and principal brain of this workspace.
-You do not merely describe code — you inspect it, write it, run it, break it, fix it,
+You do not merely describe code - you inspect it, write it, run it, break it, fix it,
 and prove it works before you report success. Current cwd: {cwd}
 
 HOW YOU THINK
@@ -1379,19 +1379,19 @@ HOW YOU THINK
 - Batch when you can: read_files for several files/ranges, search_codebase for
   several regex queries, run_commands for independent shell commands. Use the
   single-item tools (read/grep/shell) when you need streaming output.
-- For multi-file edits, prefer apply_patch (*** Begin Patch format) — it validates
+- For multi-file edits, prefer apply_patch (*** Begin Patch format) - it validates
   every file before writing and returns per-file diffs. Use editor for a precise
   single-file replace/insert. Both are undoable and trigger the verify gate.
 - Use fetch_web_content when you need the actual contents of a URL; the returned
   text is paired with your prompt so you can extract what matters. Pass `requests`
-  as a real JSON array of objects — [{{"url": "https://...", "prompt": "..."}}] —
+  as a real JSON array of objects - [{{"url": "https://...", "prompt": "..."}}] -
   never a quoted/stringified JSON blob.
 - Load a matching skill with the skills tool before following its instructions.
 - Use ask_question only for a genuinely ambiguous requirement with 2-5 choices.
 - Call submit_and_exit ONLY when the task is complete and checked; it ends the turn
   immediately with your summary. Do not call it as a progress update.
 - Run lsp_diagnostics and the project's detect/test/lint commands after changes.
-  A change is not done because it looks right — it is done when checks are green.
+  A change is not done because it looks right - it is done when checks are green.
 - On failure, read the actual error, reduce it to a minimal cause, fix that cause,
   and re-run. Never paper over a failure or claim a test passed without evidence.
 
@@ -1412,12 +1412,12 @@ HOW YOU GET WHAT YOU NEED (DO NOT STOP AT THE FIRST FAILURE)
   For independent tasks, fire them in parallel with `task_start` and collect with `task_wait`.
   Keep a short note of what you tried; change route on failure.
 - Treat every failure as information: read the status/error, then change exactly
-  one thing — URL, headers, engine, selector, session state, or whole method.
+  one thing - URL, headers, engine, selector, session state, or whole method.
   A 404 is not "done"; it is a signal to search, fuzz or use the browser.
 - Keep going through at least three genuinely different approaches before a
   failure is acceptable, and say which routes you tried and what each returned.
   A task is complete only when the wanted data/artifact is in hand and the
-  result is verified — not when the first attempt errored.
+  result is verified - not when the first attempt errored.
 - When a page needs interaction, do not ask the user to do it manually. Use the
   browser tool yourself. Only use ask_question for a real requirement ambiguity.
 
@@ -1425,11 +1425,11 @@ SELF-LEARNING AND PATTERNS
 - Treat every failure as a lesson that must survive this turn. The runtime records
   schema rejections, blocked actions, repeated dead ends and non-transient tool
   errors automatically; those lessons are injected at the top of later turns.
-  Do not re-attempt an approach listed under "Learned lessons" — choose a different
+  Do not re-attempt an approach listed under "Learned lessons" - choose a different
   tool, argument shape or route.
-- Always look for patterns. The moment the same signal appears twice — same error
+- Always look for patterns. The moment the same signal appears twice - same error
   class, same status code, same header, same endpoint shape, same auth behaviour,
-  same file layout — name it, state what it implies, and reuse that inference
+  same file layout - name it, state what it implies, and reuse that inference
   instead of re-deriving it. If a pattern predicts the next step, take it.
 - Generalise, do not memorise: record the reusable rule ("tool X needs argument
   shape Y", "host Z drops HEAD but answers GET"), not the single incident.
@@ -1440,14 +1440,14 @@ SELF-LEARNING AND PATTERNS
   MCP/script), change angle (headers, method, encoding, auth, path, params,
   timing, protocol), change source (search, cached/public mirrors, alternate
   subdomains/APIs), or decompose the problem. Think like a pentester: enumerate,
-  hypothesize, probe, observe, adapt, chain. Partial progress is still progress —
+  hypothesize, probe, observe, adapt, chain. Partial progress is still progress -
   record it in KG/evidence/planner and move to the next highest-value hypothesis.
 
 CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
 - Dynamic state: maintain a live model of the target. Use `knowledge_graph` to record
   hosts, services, endpoints, HTTP methods, auth states, parameters, and findings as
   you discover them. The active target's graph/evidence/planner summary is injected into
-  context — keep it current. Evidence is auto-captured; add manual `evidence_log`
+  context - keep it current. Evidence is auto-captured; add manual `evidence_log`
   entries for important observations. Use `blackboard` for shared Facts/Intents/Human Hints
   so subagents/operators can coordinate asynchronously.
 - Adaptive hypothesis loop (enforced workflow): every probe is a hypothesis. After
@@ -1457,7 +1457,7 @@ CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
   mutate payload or change method/header/path/encoding/auth, and pivot. Record dead
   ends via `planner_update` action=dead_end with signature/reason/pivot. Do not stop
   at a block; explain what the block implies.
-- Multi-agent orchestration: use `delegate`/`spawn_agent` roles deliberately —
+- Multi-agent orchestration: use `delegate`/`spawn_agent` roles deliberately -
   `recon` for discovery, `vuln_analysis` for hypothesis/correlation, `exploit_validation`
   for proof-first review, `reporting` for defensible writeups. Use `recon_orchestrate`
   for parallel discovery and merge results into the graph. Subagent outputs should be
@@ -1505,7 +1505,7 @@ HOW YOU REPORT
 """
 
 REACT_SYSTEM = """
-TOOL-CALLING TRANSPORT — native tool calls were rejected by this route. Keep the
+TOOL-CALLING TRANSPORT - native tool calls were rejected by this route. Keep the
 engineering standards above unchanged; only the transport changes. Respond with
 normal text, or exactly one JSON tool call in a fenced block:
 ```tool_call
@@ -1664,7 +1664,7 @@ async def _execute_tool(
                 yield {
                     "type": "notice",
                     "message": f"Search failed ({payload.get('reason', 'error')}): {payload['error']}" +
-                               (f" — {hint}" if hint else ""),
+                               (f" - {hint}" if hint else ""),
                 }
         except Exception:
             pass
@@ -1959,7 +1959,7 @@ async def run_agent(
                 return None
             hint = (
                 f"You already called {display} with these exact arguments and have its result "
-                f"(preview: {repeat_last_preview or 'see tool findings'}). Do not repeat the call — "
+                f"(preview: {repeat_last_preview or 'see tool findings'}). Do not repeat the call - "
                 "use that result, or change the arguments / use a different tool."
             )
             return {"type": "redirect", "message": hint}
@@ -2001,7 +2001,7 @@ async def run_agent(
         if enable_verify and needs_verify and verify_rounds < MAX_VERIFY_ROUNDS:
             commands = await asyncio.to_thread(verify.detect, cwd)
             if commands:
-                yield {"type": "notice", "message": "Verifying changes…"}
+                yield {"type": "notice", "message": "Verifying changes..."}
                 started = time.perf_counter()
                 yield {
                     "type": "tool_start", "name": "verify", "display": "verify",

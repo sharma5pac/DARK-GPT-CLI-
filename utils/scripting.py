@@ -2,7 +2,7 @@
 
 The agent can author a Python or bash script for a one-off job (bulk refactor,
 data extraction, code generation, test harness, ...) and execute it immediately.
-Scripts are written to a dedicated cache directory and are **never deleted** —
+Scripts are written to a dedicated cache directory and are **never deleted** -
 they are part of the evidence trail and can be inspected, re-run or committed.
 
 Everything is bounded: source size, runtime, argument count and output length.
@@ -35,7 +35,7 @@ LANGUAGES = {
 
 
 class ScriptError(ValueError):
-    """Bad script request — surfaced to the model as a tool error."""
+    """Bad script request - surfaced to the model as a tool error."""
 
 
 def normalise_language(value: str) -> str:

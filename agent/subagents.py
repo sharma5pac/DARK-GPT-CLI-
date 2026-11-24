@@ -10,7 +10,7 @@ Roles
 -----
 explore : map the codebase, find relevant files/symbols, explain how things fit
 review  : independent critic of a diff / plan / answer
-test    : test analyst — find missing cases and likely root causes
+test    : test analyst - find missing cases and likely root causes
 
 A shared semaphore bounds concurrency (default 2) and a per-turn cap bounds
 cost. Everything is best-effort: a failed worker returns a structured error

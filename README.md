@@ -10,7 +10,7 @@
 [![MCP](https://img.shields.io/badge/MCP-supported-7C3AED)](https://modelcontextprotocol.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-[Quickstart](#-quickstart) · [Features](#-what-makes-it-different) · [Security Mode](#-security--recon-mode) · [Commands](#-command-cheatsheet) · [Contributing](#-contributing)
+[Quickstart](#-quickstart) | [Features](#-what-makes-it-different) | [Security Mode](#-security--recon-mode) | [Commands](#-command-cheatsheet) | [Contributing](#-contributing)
 
 <br/>
 
@@ -60,7 +60,7 @@ NVIDIA_API_KEY=your-nvidia-key-here
 | **Native tool calling first** | Uses structured tool calls; controlled ReAct fallback (`/react on|off`) instead of silent degradation |
 | **Self-learning memory** | Captures durable lessons/patterns from failures and repeated signals; injects them into future turns |
 | **HackSkills engine** | Active security skill router with deep topic skills for recon, API, auth, injection, cloud, AD, mobile, binary, and more |
-| **Browser automation** | Real browser actions (Playwright → Selenium fallback) for JS-heavy pages, forms, clicks, extraction, screenshots |
+| **Browser automation** | Real browser actions (Playwright -> Selenium fallback) for JS-heavy pages, forms, clicks, extraction, screenshots |
 | **MCP-native** | Connect stdio/HTTP MCP servers; discover and call tools; per-server toggles |
 | **Proof-first security workflow** | Findings tracked as `attempted/proved/false_positive` with evidence refs, repro, impact, remediation |
 | **Operator UX** | Textual TUI, streaming phases, tool cards, diff cards, undo, sessions/checkpoints, copy/paste |
@@ -79,17 +79,17 @@ Set a target and DarkGPT builds a persistent investigation state:
 
 ### What gets built automatically
 
-- **Knowledge graph** — `hosts → services → endpoints → findings` in `~/.config/darkgpt/targets/<slug>/graph.json`
-- **Evidence ledger** — append-only `evidence.jsonl` with SHA-256, timestamps, redacted previews, tool args/results
-- **Report** — Markdown/HTML report from graph + evidence with proved vs attempted separation
+- **Knowledge graph** - `hosts -> services -> endpoints -> findings` in `~/.config/darkgpt/targets/<slug>/graph.json`
+- **Evidence ledger** - append-only `evidence.jsonl` with SHA-256, timestamps, redacted previews, tool args/results
+- **Report** - Markdown/HTML report from graph + evidence with proved vs attempted separation
 
 ### Core pentest reasoning
 
-- **Dynamic state management** — active target state injected into context every turn
-- **Adaptive hypothesis loop** — every probe is a hypothesis; on block/failure, pivot and record the lesson
-- **Multi-agent orchestration** — `recon`, `vuln_analysis`, `exploit_validation`, `reporting` subagent roles
-- **Vulnerability chaining** — correlate findings across assets and workflows
-- **Proof-first boundary** — no “proved” without reproducible evidence
+- **Dynamic state management** - active target state injected into context every turn
+- **Adaptive hypothesis loop** - every probe is a hypothesis; on block/failure, pivot and record the lesson
+- **Multi-agent orchestration** - `recon`, `vuln_analysis`, `exploit_validation`, `reporting` subagent roles
+- **Vulnerability chaining** - correlate findings across assets and workflows
+- **Proof-first boundary** - no "proved" without reproducible evidence
 
 ## 🛠 Developer Mode
 
@@ -125,14 +125,14 @@ DarkGPT is also a serious coding agent:
 User prompt
    │
    ▼
-Textual TUI ──► Agent Core (native tools / controlled fallback)
+Textual TUI --► Agent Core (native tools / controlled fallback)
                     │
-                    ├─ Tool Registry (fs, git, lsp, shell, browser, MCP, scripts)
-                    ├─ Skill Registry (HackSkills + custom skills)
-                    ├─ Self-Learning (lessons/patterns)
-                    ├─ Subagents (recon/vuln/validation/reporting/explore/review/test)
-                    ├─ Knowledge Graph (target state)
-                    └─ Evidence Ledger + Report Generator
+                    ├- Tool Registry (fs, git, lsp, shell, browser, MCP, scripts)
+                    ├- Skill Registry (HackSkills + custom skills)
+                    ├- Self-Learning (lessons/patterns)
+                    ├- Subagents (recon/vuln/validation/reporting/explore/review/test)
+                    ├- Knowledge Graph (target state)
+                    └- Evidence Ledger + Report Generator
 ```
 
 ## 🔒 Safety & Responsible Use
@@ -140,7 +140,7 @@ Textual TUI ──► Agent Core (native tools / controlled fallback)
 - Only test assets you own or are explicitly authorized to assess.
 - Treat evidence, reports, tokens, cookies, and dumps as sensitive.
 - `.env` and local runtime data are ignored by git; keep secrets out of commits.
-- Review findings manually before acting on “proved” claims.
+- Review findings manually before acting on "proved" claims.
 
 ## 🤝 Contributing
 
@@ -166,4 +166,4 @@ If DarkGPT saves you time in the terminal, **star the repo** and share it with b
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

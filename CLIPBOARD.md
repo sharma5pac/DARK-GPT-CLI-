@@ -6,14 +6,14 @@ session, with a brief `Copied selection` toast. No shortcut is required.
 
 ## Backends (tried in order)
 
-1. **OSC 52** via `app.copy_to_clipboard()` — works through SSH/tmux when the
+1. **OSC 52** via `app.copy_to_clipboard()` - works through SSH/tmux when the
    terminal allows it. This is set by Textual and is always attempted first.
-2. **wl-copy / wl-paste** — Wayland (`wl-clipboard` package).
-3. **xclip -selection clipboard** and **xclip -selection primary** — X11.
+2. **wl-copy / wl-paste** - Wayland (`wl-clipboard` package).
+3. **xclip -selection clipboard** and **xclip -selection primary** - X11.
    Writing both means Ctrl+V and middle-click paste work.
-4. **xsel --clipboard** — X11 fallback.
-5. **pyperclip** — optional Python fallback.
-6. **tkinter** — last-resort Python fallback.
+4. **xsel --clipboard** - X11 fallback.
+5. **pyperclip** - optional Python fallback.
+6. **tkinter** - last-resort Python fallback.
 
 Missing binaries never raise: the failure is logged in the result and shown as a
 warning toast. Run `/clipboard` in the TUI to see exactly what is available.
@@ -22,7 +22,7 @@ warning toast. Run `/clipboard` in the TUI to see exactly what is available.
 
 - QTerminal **owns** Ctrl+Shift+C / Ctrl+Shift+V, so those keys never reach the
   TUI. DarkGPT also binds **Ctrl+Alt+C / Alt+C** (copy) and **Ctrl+Alt+V /
-  Alt+V** (paste) — use these inside the TUI. Where the terminal passes them
+  Alt+V** (paste) - use these inside the TUI. Where the terminal passes them
   through, Ctrl+Shift+C / Ctrl+Shift+V still work.
 - If mouse tracking intercepts a drag, hold **Shift** while selecting; QTerminal
   then lets the terminal handle the selection rather than the TUI.

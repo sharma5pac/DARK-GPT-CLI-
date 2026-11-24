@@ -218,7 +218,7 @@ def normalise_web_requests(raw: Any) -> List[Dict[str, str]]:
         # Models frequently double-encode this argument: the JSON array/object
         # arrives as a *string* (e.g. '[{"url": "https://..."}]'). Without this
         # decode the whole blob is treated as a URL and every fetch fails with
-        # "only http:// and https:// URLs are supported" — a mistake the agent
+        # "only http:// and https:// URLs are supported" - a mistake the agent
         # then repeats for the rest of the turn.
         if text.startswith(("[", "{")):
             try:
@@ -256,7 +256,7 @@ def fetch_web_content(raw: Any) -> Dict[str, Any]:
     The calling agent receives the prompt alongside the content, so it can
     perform the extraction/analysis itself without a nested model call.
     """
-    # De-duplicate identical URLs in a single batch — the model sometimes asks
+    # De-duplicate identical URLs in a single batch - the model sometimes asks
     # for the same page twice with different prompts.
     seen: set[str] = set()
     unique: List[Dict[str, str]] = []

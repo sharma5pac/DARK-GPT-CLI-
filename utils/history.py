@@ -124,7 +124,7 @@ def derive_title(text: str, limit: int = 44) -> str:
         return "New chat"
     if len(clean) <= limit:
         return clean
-    return clean[:limit].rstrip() + "…"
+    return clean[:limit].rstrip() + "..."
 
 
 # --------------------------------------------------------------------------- write

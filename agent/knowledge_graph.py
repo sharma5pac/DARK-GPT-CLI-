@@ -1,6 +1,6 @@
 """Per-target knowledge graph for recon/pentest work.
 
-Persists hosts → services → endpoints → findings so recon can resume and
+Persists hosts -> services -> endpoints -> findings so recon can resume and
 patterns/evidence transfer across engagements. Data is never deleted implicitly;
 merges are additive and idempotent by node key.
 """

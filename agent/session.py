@@ -1,7 +1,7 @@
 """Append-only session checkpoints and safe resume.
 
 A checkpoint captures the full text conversation, a compact summary, git state
-and the last prompt. Nothing is ever deleted or overwritten — checkpoints are
+and the last prompt. Nothing is ever deleted or overwritten - checkpoints are
 an evidence trail as well as a resume mechanism.
 
 Resume replays only user/assistant text into the visible conversation. Tool
@@ -77,7 +77,7 @@ def create(
 def _turn_count(entry: Dict[str, Any], checkpoint: Dict[str, Any]) -> int:
     """Turn count from checkpoint metadata or the entry's own turn list.
 
-    ``checkpoint['turns']`` is an int, while ``entry['turns']`` is a list — and
+    ``checkpoint['turns']`` is an int, while ``entry['turns']`` is a list - and
     ``create()`` returns only the metadata dict. Accept either shape so
     ``summary_text()`` never calls ``len()`` on an int.
     """
@@ -169,7 +169,7 @@ def summary_text(entry: Dict[str, Any]) -> str:
     checkpoint = entry.get("checkpoint") or {}
     git = entry.get("git") or {}
     lines = [
-        f"Session {entry.get('id')} · {time.strftime('%Y-%m-%d %H:%M', time.localtime(float(entry.get('ts') or 0)))}",
+        f"Session {entry.get('id')} | {time.strftime('%Y-%m-%d %H:%M', time.localtime(float(entry.get('ts') or 0)))}",
         f"model at checkpoint: {entry.get('model') or '(unknown)'}",
         f"turns: {_turn_count(entry, checkpoint)}",
     ]

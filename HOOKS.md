@@ -23,7 +23,7 @@ Create `~/.config/darkgpt/hooks.json` (global) or `<repo>/.darkgpt/hooks.json` (
 Rules:
 
 - Every entry is a shell command string or `{"command": "...", "timeout": N}`.
-- Timeouts are 1–30s (default 5s). Output is captured and shown to the model.
+- Timeouts are 1-30s (default 5s). Output is captured and shown to the model.
 - A non-zero exit from a `pre_*` hook **blocks** the tool with the output as the reason.
 - `post_*` hooks never block; their output is attached to the tool result as `hook_output`.
 - Available environment variables: `DARKGPT_EVENT`, `DARKGPT_CWD`, `DARKGPT_TOOL`,
@@ -36,7 +36,7 @@ Rules:
 
 | Mode | Behaviour |
 |---|---|
-| `full` | No prompts (default — previous behaviour). |
+| `full` | No prompts (default - previous behaviour). |
 | `ask` | Confirm file edits, shell commands and MCP calls. |
 | `strict` | Confirm every non-read-only tool. |
 
@@ -49,8 +49,8 @@ auto-denies anything that would write or execute a shell command.
 
 The `script` tool writes a Python or bash program to
 `~/.cache/darkgpt/scripts/` and runs it with a bounded timeout (30s default,
-120s max). It is classified as `shell` risk — or `danger` when the source
-matches the dangerous-command patterns — so `ask`/`strict` modes prompt and
+120s max). It is classified as `shell` risk - or `danger` when the source
+matches the dangerous-command patterns - so `ask`/`strict` modes prompt and
 `pre_shell` / `post_shell` hooks fire exactly as they do for `shell`.
 
 Scripts are never deleted. `/scripts` lists them and `/scripts show <path>`

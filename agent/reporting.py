@@ -118,7 +118,7 @@ def build_markdown(target: str) -> str:
     d = build_report_data(target)
     s = d["summary"]
     lines: List[str] = []
-    lines.append(f"# Pentest Report — {d['target']}")
+    lines.append(f"# Pentest Report - {d['target']}")
     lines.append("")
     lines.append(f"- Generated: {d['generated_at']}")
     lines.append(f"- Target slug: `{d['slug']}`")
@@ -154,7 +154,7 @@ def build_markdown(target: str) -> str:
         lines.append("")
     lines.append("## Attack Surface")
     lines.append("")
-    for section, key, fmt in [("Hosts", "hosts", lambda a: f"- `{a.get('host') or a.get('id','')}`" + (f" — {a.get('notes')}" if a.get('notes') else "")),
+    for section, key, fmt in [("Hosts", "hosts", lambda a: f"- `{a.get('host') or a.get('id','')}`" + (f" - {a.get('notes')}" if a.get('notes') else "")),
                               ("Services", "services", lambda a: f"- `{a.get('host')}:{a.get('port')}/{a.get('proto','tcp')}`" + (f" ({a.get('name') or a.get('product')})" if (a.get('name') or a.get('product')) else "")),
                               ("Endpoints", "endpoints", lambda a: f"- {a.get('url') or a.get('id','')}")]:
         lines.append(f"### {section}")
@@ -205,7 +205,7 @@ def build_html(target: str) -> str:
         if f.get("asset"): meta.append(f"Asset: <code>{esc(f['asset'])}</code>")
         if f.get("evidence_ref"): meta.append(f"Evidence: <code>{esc(f['evidence_ref'])}</code>")
         if f.get("confidence") is not None: meta.append(f"Confidence: <code>{esc(f['confidence'])}</code>")
-        if meta: body = "<p>" + " · ".join(meta) + "</p>" + body
+        if meta: body = "<p>" + " | ".join(meta) + "</p>" + body
         finding_blocks.append(f"<section class='finding'><h3>{f['index']}. [{esc(f['severity'].upper())}] [{esc(f['status'].upper())}] {esc(f['title'])}</h3>{body}</section>")
 
     rows = []
@@ -217,11 +217,11 @@ def build_html(target: str) -> str:
     return f"""<!doctype html><html><head><meta charset='utf-8'><title>Report {esc(d['target'])}</title>
 <style>body{{font-family:system-ui,sans-serif;margin:24px;max-width:1100px}} table{{border-collapse:collapse;width:100%}} td,th{{border:1px solid #ddd;padding:6px;font-size:13px;vertical-align:top}} pre{{white-space:pre-wrap;background:#111;color:#eee;padding:12px;border-radius:8px}} .finding{{margin:16px 0;padding:8px 0;border-bottom:1px solid #eee}} code{{background:#f3f3f3;padding:1px 4px;border-radius:4px}}</style>
 </head><body>
-<h1>Pentest Report — {esc(d['target'])}</h1>
-<p>Generated {esc(d['generated_at'])} · Graph <code>{esc(d['graph_path'])}</code></p>
+<h1>Pentest Report - {esc(d['target'])}</h1>
+<p>Generated {esc(d['generated_at'])} | Graph <code>{esc(d['graph_path'])}</code></p>
 <h2>Summary</h2><ul>
 <li>Hosts: {s['hosts']}</li><li>Services: {s['services']}</li><li>Endpoints: {s['endpoints']}</li><li>Findings: {s['findings']}</li>
-<li>Proved: {s['proved']} · Attempted/unverified: {s['attempted_or_unverified']}</li>
+<li>Proved: {s['proved']} | Attempted/unverified: {s['attempted_or_unverified']}</li>
 <li>Evidence: {s['evidence_entries']} (ok={s['evidence_ok']}, failed={s['evidence_failed']})</li>
 </ul>
 <h2>Findings</h2>{''.join(finding_blocks) or '<p><em>No findings recorded yet.</em></p>'}

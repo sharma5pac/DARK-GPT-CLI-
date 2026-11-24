@@ -1,4 +1,4 @@
-/* DarkGPT — ChatGPT-like shell.
+/* DarkGPT - ChatGPT-like shell.
    Streamlit elements are targeted by data-testid; class names are generated. */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
@@ -99,7 +99,7 @@ section[data-testid="stSidebar"] div.stButton > button[kind="primary"]:hover {
     padding: .18rem .6rem;
     white-space: nowrap;
 }
-.dg-badge::before { content: "model · "; color: #9b9b9b; }
+.dg-badge::before { content: "model | "; color: #9b9b9b; }
 
 .dg-hero { text-align: center; margin: 10vh auto 1.6rem; max-width: 560px; }
 .dg-hero-mark { font-size: 2.1rem; color: #10a37f; line-height: 1; }

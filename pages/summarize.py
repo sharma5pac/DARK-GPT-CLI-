@@ -38,11 +38,11 @@ def analyze_text(input_text):
 
 # Function to display the homepage
 def display_homepage():
-    st.markdown("<h1 style='text-align: center; color: white; font-size:28px;'>Welcome to DarkGPT!🧨</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center; font-size:56px;'<p>🤖</p></h3>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: white; font-size:28px;'>Welcome to DarkGPT!?</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; font-size:56px;'<p>?</p></h3>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center; color: grey; font-size:20px;'>DarkGPT: Your AI text assistant for quick summarization and analysis. Summarize text, analyze complexity, and get insights instantly.!</h3>", unsafe_allow_html=True)
-    st.page_link(page='app.py', label='Back to Home', icon='🏠')
-    st.page_link(page='pages/DarkGPT.py', label='DarkGPT', icon='📝')
+    st.page_link(page='app.py', label='Back to Home', icon='?')
+    st.page_link(page='pages/DarkGPT.py', label='DarkGPT', icon='?')
     st.markdown('___')
     st.markdown("<h3 style='text-align: left; color:#F63366; font-size:18px;'><b>What is this App about?<b></h3>", unsafe_allow_html=True)
     st.write("The provided code is a Streamlit web application named 'DarkGPT' that allows users to summarize and analyze text. Here's an overview of each page and the footer mentioning the author:")

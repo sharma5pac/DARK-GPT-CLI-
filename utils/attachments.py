@@ -137,4 +137,4 @@ def summarise(attachments: List[Dict]) -> str:
         bits.append(f"{images} image(s)")
     if errors:
         bits.append(f"{errors} rejected")
-    return " · ".join(bits)
+    return " | ".join(bits)
