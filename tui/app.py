@@ -122,9 +122,10 @@ class PhaseTimeline(Static):
         super().__init__()
         self.steps: List[Dict[str, Any]] = []
         self._started = time.perf_counter()
+        self._started_wall = time.time()
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(0.1, self.tick)  # keep a strong ref (WeakSet in Textual)
+        self._timer = self.set_interval(0.25, self.tick)  # keep a strong ref (WeakSet in Textual)
         self.render_timeline()
 
     def start(self, phase: str, label: Optional[str] = None) -> int:
@@ -135,6 +136,7 @@ class PhaseTimeline(Static):
                 "label": label or PHASE_LABELS.get(phase, phase),
                 "status": "active",
                 "started": time.perf_counter(),
+                "started_wall": time.time(),
                 "elapsed": 0.0,
             }
         )
@@ -146,6 +148,7 @@ class PhaseTimeline(Static):
             if step["phase"] == phase and step["status"] == "active":
                 step["status"] = "done" if ok else "error"
                 step["elapsed"] = float(duration) if duration is not None else (time.perf_counter() - step["started"])
+                step["ended_wall"] = time.time()
                 if label:
                     step["label"] = label
                 break
@@ -156,6 +159,7 @@ class PhaseTimeline(Static):
             if step["status"] == "active":
                 step["status"] = "done" if ok else "error"
                 step["elapsed"] = time.perf_counter() - step["started"]
+                step["ended_wall"] = time.time()
         self.render_timeline()
 
     def tick(self) -> None:
@@ -164,10 +168,13 @@ class PhaseTimeline(Static):
 
     def render_timeline(self) -> None:
         total = time.perf_counter() - self._started
+        started_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._started_wall))
         text = Text()
-        text.append(f"Activity  {total:.1f}s\n", style="bold #8b949e")
+        text.append(f"Activity  {started_stamp}  |  {total:.1f}s\n", style="bold #8b949e")
         for step in self.steps[-12:]:
             elapsed = step["elapsed"] if step["status"] != "active" else (time.perf_counter() - step["started"])
+            stamp_t = step.get("ended_wall") or step.get("started_wall") or self._started_wall
+            stamp = time.strftime("%H:%M:%S", time.localtime(float(stamp_t)))
             if step["status"] == "done":
                 mark, style = "[ok]", "#6abf69"
             elif step["status"] == "error":
@@ -175,6 +182,7 @@ class PhaseTimeline(Static):
             else:
                 mark, style = "*", "#d4a359"
             text.append(f" {mark} ", style=style)
+            text.append(f"[{stamp}] ", style="#777777")
             text.append(f"{step['label']}", style="#e5e5e5" if step["status"] == "active" else "#c9d1d9")
             text.append(f"  {elapsed:.1f}s\n", style="#777777")
         self.update(text)
@@ -632,12 +640,14 @@ class ErrorCard(Static):
 class ChatMessage(Vertical):
     ALLOW_SELECT = True
 
-    def __init__(self, role: str, content: str = "") -> None:
+    def __init__(self, role: str, content: str = "", ts: float | None = None) -> None:
         super().__init__()
         self.role = role
         self.raw_content = ascii_safe(content)
+        self.ts = float(ts or time.time())
         self._md: Markdown | None = None
         self._user_text: Static | None = None
+        self._meta: Static | None = None
 
     def on_mount(self) -> None:
         self.render_msg()
@@ -646,7 +656,21 @@ class ChatMessage(Vertical):
         self.raw_content = ascii_safe(content)
         self.render_msg()
 
+    def _meta_text(self) -> Text:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.ts))
+        who = "You" if self.role == "user" else "Assistant"
+        return Text(f"{who} | {stamp}", style="#777777")
+
+    def _ensure_meta(self) -> None:
+        if self._meta is None:
+            self._meta = Static(self._meta_text(), classes="msg-meta")
+            self._meta.ALLOW_SELECT = True
+            self.mount(self._meta)
+        else:
+            self._meta.update(self._meta_text())
+
     def render_msg(self) -> None:
+        self._ensure_meta()
         if self.role == "user":
             self.remove_class("msg-assistant")
             self.add_class("msg-user")
@@ -2395,7 +2419,14 @@ class DarkGPTApp(App):
                 conv = self.query_one("#conversation", VerticalScroll)
                 await conv.remove_children()
                 for message in restored:
-                    await conv.mount(ChatMessage(message["role"], message["content"][:6000]))
+                    ts = message.get("created_at_ts")
+                    if ts is None and message.get("created_at"):
+                        try:
+                            from datetime import datetime
+                            ts = datetime.fromisoformat(str(message["created_at"]).replace("Z","+00:00")).timestamp()
+                        except Exception:
+                            ts = None
+                    await conv.mount(ChatMessage(message["role"], message["content"][:6000], ts=ts))
                 self._session_id = str(entry.get("id") or "")
                 self.update_context()
                 self._system_note(
@@ -2559,7 +2590,14 @@ class DarkGPTApp(App):
             conv = self.query_one("#conversation", VerticalScroll)
             await conv.remove_children()
             for message in restored:
-                await conv.mount(ChatMessage(message["role"], message["content"][:6000]))
+                ts = message.get("created_at_ts")
+                if ts is None and message.get("created_at"):
+                    try:
+                        from datetime import datetime
+                        ts = datetime.fromisoformat(str(message["created_at"]).replace("Z","+00:00")).timestamp()
+                    except Exception:
+                        ts = None
+                await conv.mount(ChatMessage(message["role"], message["content"][:6000], ts=ts))
             self._session_id = ""
             self.refresh_status()
             self.update_context()
@@ -3255,7 +3293,7 @@ class DarkGPTApp(App):
         self._liveness_start("Connecting")
         conv = self.query_one("#conversation", VerticalScroll)
         if echo_user:
-            await conv.mount(ChatMessage("user", text))
+            await conv.mount(ChatMessage("user", text, ts=time.time()))
             self.messages.append({"role": "user", "content": text})
             if not self.conv_id:
                 self.conv_id = db.create_conversation(text[:44], self.model)
@@ -3265,7 +3303,7 @@ class DarkGPTApp(App):
         timeline = PhaseTimeline()
         await conv.mount(timeline)
         spinner = ActivitySpinner()
-        assistant = ChatMessage("assistant", "")
+        assistant = ChatMessage("assistant", "", ts=time.time())
         await conv.mount(assistant)
         await conv.mount(spinner, before=assistant)
 
