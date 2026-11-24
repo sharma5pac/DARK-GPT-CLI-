@@ -192,6 +192,7 @@ A.clipboard.copy_text = fake_copy
 PASTED = []
 A.clipboard.paste_text = lambda app=None: (PASTED.append(1) or "p1\np2\np3\np4\np5\np6")
 NOTES = []
+_ORIGINAL_SYSTEM_NOTE = A.DarkGPTApp._system_note
 A.DarkGPTApp._system_note = lambda self, text: NOTES.append(str(text))
 
 
@@ -328,6 +329,7 @@ async def check_tui():
         assert C.DEFAULT_MAX_STEPS >= 28
         assert (C.MAX_VERIFY_ROUNDS, C.MAX_REVIEW_ROUNDS, C.MAX_SUBAGENTS_PER_TURN) == (2, 1, 3)
         ok("guardrails configured (repeat/tools/steps/verify/review/subagents)")
+    A.DarkGPTApp._system_note = _ORIGINAL_SYSTEM_NOTE
 
 
 async def check_session_picker_delete():

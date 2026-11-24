@@ -26,7 +26,7 @@ except Exception:
 from textual.widgets.option_list import Option
 
 from agent import tokens as token_util
-from agent import jobs, tool_discovery
+from agent import jobs, tool_discovery, tool_inventory
 from agent.core import DEFAULT_MODEL, SYSTEM, ToolRegistry, run_agent
 from agent.skills import SkillRegistry
 from mcp_manager.client import MCPManager
@@ -59,7 +59,7 @@ COMMANDS: List[tuple[str, str]] = [
     ("/retry", "Re-run the last prompt (or /retry force)"),
     ("/pending", "Show or clear prompts queued while a turn was running"),
     ("/status", "Show model, MCP, tokens and 402 cooldown"),
-    ("/tools-scan", "Scan local tools and rank them for an objective"),
+    ("/tools-scan", "Scan/rank local tools (/tools-scan refresh rebuilds full inventory)"),
     ("/jobs", "List background tasks/jobs (/jobs <id> for log, /jobs kill <id>)"),
     ("/budget", "Show/set tool/step budget (/budget tools 60, /budget steps 40)"),
     ("/steps", "Alias for /budget steps <n>"),
@@ -2128,6 +2128,9 @@ class DarkGPTApp(App):
         except Exception:
             pass
         self.run_worker(self._start_mcp(), exclusive=False)
+        # First launch: discover what this machine actually has while the UI is
+        # already usable. The result is cached for later launches.
+        self.run_worker(self._startup_inventory(), exclusive=False)
         self.refresh_status()
         self.update_context()
         self._system_note(
@@ -2140,6 +2143,8 @@ class DarkGPTApp(App):
             "The agent tries fetch -> search -> browser -> MCP before reporting failure.\n"
             "STATE: /provider and /status show live provider/usage | /pending lists or clears queued prompts "
             "(prompts sent while busy are queued, never dropped) | /sessions and /resume for checkpoints\n"
+            "SCAN: first launch inventories local tools/apps/folders in the background and caches it; "
+            "/tools-scan <objective> ranks routes, /tools-scan refresh rebuilds the cache\n"
             "LEARN: self-learning ON - mistakes become lessons, repeated signals become patterns. "
             "/lessons and /patterns show them | /learn toggles capture | hack skill active (HackSkills router)"
         )
@@ -2311,6 +2316,41 @@ class DarkGPTApp(App):
         conv.mount(note)
         conv.scroll_end(animate=False)
 
+    async def _startup_inventory(self, force: bool = False) -> None:
+        """Build/load the local capability map without blocking startup."""
+        panel = None
+        if not self.busy:
+            try:
+                panel = self.query_one("#plan-panel", PlanPanel)
+                panel.set_plan(
+                    "first launch: scan local tools / apps / folders",
+                    [
+                        {"id": "scan", "label": "Scanning PATH and app launchers", "status": "working"},
+                        {"id": "cache", "label": "Cache inventory for later launches", "status": "pending"},
+                        {"id": "ready", "label": "Expose capabilities to the model", "status": "pending"},
+                    ],
+                )
+            except Exception:
+                panel = None
+        try:
+            data, scanned = await asyncio.to_thread(tool_inventory.ensure_fresh, force)
+            summary = tool_inventory.startup_summary(data, scanned)
+        except Exception as exc:  # noqa: BLE001
+            summary = f"Inventory scan failed: {type(exc).__name__}: {exc}. Continue normally."
+            data, scanned = {}, False
+        if panel is not None and not self.busy:
+            steps = [
+                {"id": "scan", "label": "Scanning PATH and app launchers", "status": "finished"},
+                {"id": "cache", "label": "Cache inventory for later launches", "status": "finished"},
+                {"id": "ready", "label": "Expose capabilities to the model", "status": "finished"},
+            ]
+            if data.get("scanned_at"):
+                panel.set_plan(f"inventory ready ({data.get('relevant_count', 0)} relevant tools)", steps)
+                panel.finish(True)
+            else:
+                panel.set_plan("inventory unavailable", [{"id": "error", "label": "Scan failed", "status": "error"}])
+        self._system_note(summary)
+
     def _auto_compact_messages(self) -> None:
         """Compact long in-memory history to keep long sessions fast."""
         msgs = getattr(self, "messages", None) or []
@@ -2432,8 +2472,11 @@ class DarkGPTApp(App):
         elif name == "/status":
             self._show_status()
         elif name == "/tools-scan":
-            objective = " ".join(parts[1:]).strip() or "local pentest tooling"
-            await self._handle_tools_scan(objective)
+            if parts[1:2] and parts[1].lower() in ("refresh", "rescan", "--refresh", "-r"):
+                await self._startup_inventory(force=True)
+            else:
+                objective = " ".join(parts[1:]).strip() or "local pentest tooling"
+                await self._handle_tools_scan(objective)
         elif name == "/jobs":
             await self._handle_jobs_command(parts)
         elif name in ("/budget", "/steps"):
@@ -3414,7 +3457,8 @@ class DarkGPTApp(App):
             names = [spec["function"]["name"] for spec in self._tool_registry_specs()]
         except Exception:
             names = []
-        found = await asyncio.to_thread(tool_discovery.discover_tools)
+        data, _ = await asyncio.to_thread(tool_inventory.ensure_fresh, False)
+        found = data.get("relevant") or await asyncio.to_thread(tool_discovery.discover_tools)
         ranked = await asyncio.to_thread(
             tool_discovery.rank_tools, objective, found,
             mcp_tool_names=names, limit=12,
@@ -3423,7 +3467,7 @@ class DarkGPTApp(App):
         panel.set_plan(
             f"scan: {objective}",
             [
-                {"id": "discover", "label": f"Verified {len(found)} local binaries", "status": "finished"},
+                {"id": "discover", "label": f"Verified {data.get('binary_count', len(found))} binaries", "status": "finished"},
                 {"id": "rank", "label": f"Ranked {len(ranked)} matching routes", "status": "finished"},
                 {"id": "ready", "label": "Ready for autonomous_route", "status": "finished"},
             ],

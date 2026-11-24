@@ -1948,6 +1948,16 @@ async def run_agent(
     )
     if extras:
         system += "\n\n" + extras
+    try:
+        # First-launch inventory is cached on disk; loading it into context is
+        # cheap and gives the model real machine capabilities before it acts.
+        from agent import tool_inventory as inventory_util
+
+        capability_block = inventory_util.context_summary()
+        if capability_block:
+            system += "\n\n" + capability_block
+    except Exception:
+        pass
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
     for item in context_util.pack(history or [], context_util.budget_for(model)):
