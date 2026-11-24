@@ -81,7 +81,7 @@ COMMANDS: List[tuple[str, str]] = [
     ("/compact", "Compact older turns into a summary now"),
     ("/permissions", "Show/set permission mode (full|ask|strict)"),
     ("/hooks", "Show configured pre/post tool hooks"),
-    ("/react", "Show/set ReAct fallback (/react on|off) — native tools are retried first"),
+    ("/react", "Show/set ReAct fallback (/react on|off) - native tools are retried first"),
     ("/scripts", "List self-written helper scripts (/scripts show <path>)"),
     ("/checkpoint", "Save a session checkpoint (/checkpoint <label>)"),
     ("/resume", "Resume the latest or a chosen session (/resume <id>)"),
@@ -169,11 +169,11 @@ class PhaseTimeline(Static):
         for step in self.steps[-12:]:
             elapsed = step["elapsed"] if step["status"] != "active" else (time.perf_counter() - step["started"])
             if step["status"] == "done":
-                mark, style = "✓", "#6abf69"
+                mark, style = "[ok]", "#6abf69"
             elif step["status"] == "error":
-                mark, style = "✗", "#e06c75"
+                mark, style = "[x]", "#e06c75"
             else:
-                mark, style = "●", "#d4a359"
+                mark, style = "*", "#d4a359"
             text.append(f" {mark} ", style=style)
             text.append(f"{step['label']}", style="#e5e5e5" if step["status"] == "active" else "#c9d1d9")
             text.append(f"  {elapsed:.1f}s\n", style="#777777")
@@ -191,6 +191,8 @@ class ThoughtBlock(Static):
         self.thought = text
         self.seconds = seconds
         self.expanded = False
+        self.summary_prefix = "Thought"
+        self.style_name = "thought"
 
     def on_mount(self) -> None:
         self.render_block()
@@ -201,12 +203,14 @@ class ThoughtBlock(Static):
         self.render_block()
 
     def render_block(self) -> None:
-        summary = (self.thought.strip().splitlines() or ["reasoning"])[0][:90]
-        head = f"+ Thought: {summary} · {self.seconds:.1f}s"
+        summary = (self.thought.strip().splitlines() or [self.summary_prefix.lower()])[0][:90]
+        suffix = f" | {self.seconds:.1f}s" if self.seconds else ""
+        head = f"+ {self.summary_prefix}: {summary}{suffix}"
+        style = "#d4a359" if self.style_name != "plan" else "#8ab4f8"
         if self.expanded and self.thought.strip():
-            self.update(Text(head + "\n\n" + self.thought.strip(), style="#d4a359"))
+            self.update(Text(head + "\n\n" + self.thought.strip(), style=style))
         else:
-            self.update(Text(head, style="#d4a359"))
+            self.update(Text(head, style=style))
 
     def action_toggle(self) -> None:
         self.expanded = not self.expanded
@@ -243,9 +247,9 @@ def result_preview(result: Any, lines: int = 4, limit: int = 360) -> str:
         return ""
     parts = clean.splitlines()
     if len(parts) > lines:
-        clean = "\n".join(parts[:lines]) + f"\n… +{len(parts) - lines} more lines"
+        clean = "\n".join(parts[:lines]) + f"\n... +{len(parts) - lines} more lines"
     if len(clean) > limit:
-        clean = clean[:limit] + "…"
+        clean = clean[:limit] + "..."
     return clean
 
 
@@ -305,7 +309,7 @@ class ToolCard(Static):
             arg = json.dumps(self.args, ensure_ascii=False)
             if len(arg) > 120:
                 arg = arg[:120] + "..."
-            head = f"⚙ {self.display_name}({arg})"
+            head = f"[*] {self.display_name}({arg})"
         body = "\n".join(self.output_lines)
         if not body and self.result:
             body = self._result_output()
@@ -315,9 +319,9 @@ class ToolCard(Static):
         if not self.done:
             status, style = "active", "#d4a359"
         elif self.ok:
-            status, style = f"✓ done in {self.duration:.2f}s", "#6abf69"
+            status, style = f"[ok] done in {self.duration:.2f}s", "#6abf69"
         else:
-            status, style = "✗ failed", "#e06c75"
+            status, style = "[x] failed", "#e06c75"
         text = Text()
         text.append(head + "\n", style="bold #e5e5e5")
         if body:
@@ -345,7 +349,7 @@ class DiffCard(Static):
         lines = self.diff.splitlines()
         body = "\n".join(lines[:60])
         if len(lines) > 60:
-            body += f"\n… {len(lines) - 60} more lines (/diff for the full diff)"
+            body += f"\n... {len(lines) - 60} more lines (/diff for the full diff)"
         text = Text()
         text.append("Edit preview\n", style="bold #8ab4f8")
         text.append(body or "(no diff)", style="#a8a8a8")
@@ -366,16 +370,16 @@ class SubagentCard(Static):
 
     def on_mount(self) -> None:
         text = Text()
-        text.append(f"◇ subagent:{self.agent_role}", style="bold #c58af9")
+        text.append(f"< subagent:{self.agent_role}", style="bold #c58af9")
         text.append("  " + self.subtask[:90], style="#a8a8a8")
-        text.append("\n  working…", style="#6a6a6a")
+        text.append("\n  working...", style="#6a6a6a")
         self.update(text)
 
     def finish(self, ok: bool, preview: str, duration: float) -> None:
         text = Text()
-        text.append(f"{'◆' if ok else '✗'} subagent:{self.agent_role}", style="bold #c58af9" if ok else "bold #ff6b6b")
+        text.append(f"{'>' if ok else '[x]'} subagent:{self.agent_role}", style="bold #c58af9" if ok else "bold #ff6b6b")
         text.append("  " + self.subtask[:90], style="#a8a8a8")
-        text.append(f"\n  {duration:.1f}s · " + (preview[:180] if ok else f"FAILED: {preview[:160]}"), style="#8ab4f8" if ok else "#ff9d9d")
+        text.append(f"\n  {duration:.1f}s | " + (preview[:180] if ok else f"FAILED: {preview[:160]}"), style="#8ab4f8" if ok else "#ff9d9d")
         self.update(text)
 
 
@@ -404,9 +408,9 @@ class BackgroundIndicator(Static):
     def refresh_line(self) -> None:
         n = len(self.calls)
         if self.running:
-            text = Text(f"⚙ mcp: {n} background call{'s' if n != 1 else ''} · running…", style="#d4a359")
+            text = Text(f"[*] mcp: {n} background call{'s' if n != 1 else ''} | running...", style="#d4a359")
         else:
-            text = Text(f"⚙ mcp: {n} background call{'s' if n != 1 else ''} · done", style="#8a8a8a")
+            text = Text(f"[*] mcp: {n} background call{'s' if n != 1 else ''} | done", style="#8a8a8a")
         self.update(text)
         self.set_class(self.running > 0, "running")
 
@@ -415,7 +419,7 @@ class ActivitySpinner(Static):
     """Rotating braille spinner with the current activity and live elapsed time.
 
     Driven by a local timer so the TUI visibly moves while the model thinks,
-    connects or runs tools — not a static line waiting for the next event.
+    connects or runs tools - not a static line waiting for the next event.
     """
 
     FRAMES = "-\\|/"
@@ -465,7 +469,7 @@ class ActivitySpinner(Static):
             text.append(f"  {time.perf_counter() - self.started:.1f}s", style="#6a6a6a")
         else:
             ok = bool(self.finished)
-            mark = "✓" if ok else "✗"
+            mark = "[ok]" if ok else "[x]"
             style = "bold #6abf69" if ok else "bold #ff6b6b"
             text.append(f"{mark} ", style=style)
             text.append("Response ready" if ok else "Turn stopped", style=style)
@@ -484,7 +488,7 @@ class SectionLabel(Static):
         self.section_style = style
 
     def on_mount(self) -> None:
-        self.update(Text(f"── {self.section_title} ──", style=self.section_style))
+        self.update(Text(f"-- {self.section_title} --", style=self.section_style))
 
 
 class FindingCard(Static):
@@ -529,14 +533,14 @@ class FindingCard(Static):
         elif not body:
             body = "(no output)"
         text = Text()
-        mark = "◆" if self.ok else "✗"
+        mark = ">" if self.ok else "[x]"
         text.append(
             f"{mark} finding: {self.display_name}",
             style="bold #6abf69" if self.ok else "bold #ff6b6b",
         )
-        text.append(f"  · {self.duration:.2f}s", style="#6a6a6a")
+        text.append(f"  | {self.duration:.2f}s", style="#6a6a6a")
         text.append("\n" + body, style="#a8a8a8" if self.ok else "#ff9d9d")
-        text.append("\n  Enter/click to expand · /bg <n> for full result", style="#5a5a5a")
+        text.append("\n  Enter/click to expand | /bg <n> for full result", style="#5a5a5a")
         self.update(text)
 
     def action_toggle(self) -> None:
@@ -566,7 +570,7 @@ class ErrorCard(Static):
         reason = c.get("reason") or "request failed"
         daily = bool(c.get("daily_limit"))
         text = Text()
-        text.append(f"HTTP {status} · {reason}\n", style="bold #e06c75")
+        text.append(f"HTTP {status} | {reason}\n", style="bold #e06c75")
         message = (c.get("message") or "").strip()
         if message:
             text.append(message + "\n", style="#f0c0c0")
@@ -599,7 +603,7 @@ class ErrorCard(Static):
                 style="#8ab4f8",
             )
         else:
-            text.append("Recover: /retry · /model · /status", style="#8ab4f8")
+            text.append("Recover: /retry | /model | /status", style="#8ab4f8")
         self.update(text)
 
 
@@ -747,7 +751,7 @@ class PermissionScreen(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal small"):
-            yield Static(f"Permission · {self.risk}\n\n{self.message}", classes="modal-title")
+            yield Static(f"Permission | {self.risk}\n\n{self.message}", classes="modal-title")
             with Horizontal(classes="button-row"):
                 yield Button("Deny", id="perm-deny", variant="error")
                 yield Button("Allow once", id="perm-once", variant="warning")
@@ -783,11 +787,11 @@ class AskQuestionScreen(ModalScreen[Optional[str]]):
         with Vertical(classes="modal small"):
             yield Static(f"Question\n\n{self.question}", classes="modal-title")
             yield OptionList(id="question-options")
-            yield Input(placeholder="Or type your own answer…", id="question-custom")
+            yield Input(placeholder="Or type your own answer...", id="question-custom")
             with Horizontal(classes="button-row"):
                 yield Button("Answer", id="question-answer", variant="success")
                 yield Button("Cancel", id="question-cancel")
-            yield Static("↑↓ choose · Enter answer · Esc cancel", classes="modal-help")
+            yield Static("^v choose | Enter answer | Esc cancel", classes="modal-help")
 
     def on_mount(self) -> None:
         options = self.query_one("#question-options", OptionList)
@@ -862,15 +866,15 @@ class ModelPickerScreen(ModalScreen[Optional[Any]]):
         super().__init__()
         self.current = current
         self.active_provider = active_provider or current_provider()
-        # (provider key, display label, models) — headers are disabled rows.
+        # (provider key, display label, models) - headers are disabled rows.
         self.groups: List[tuple[str, str, List[Dict[str, Any]]]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal"):
-            yield Static("Select a model · OpenRouter + NVIDIA NIM", classes="modal-title")
-            yield ModelSearchInput(placeholder="Search all models…", id="model-search")
+            yield Static("Select a model | OpenRouter + NVIDIA NIM", classes="modal-title")
+            yield ModelSearchInput(placeholder="Search all models...", id="model-search")
             yield OptionList(id="model-list")
-            yield Static("↑/↓ move · Enter select · Esc close · type to filter", classes="modal-help")
+            yield Static("^/v move | Enter select | Esc close | type to filter", classes="modal-help")
 
     def on_mount(self) -> None:
         self.run_worker(self._load(), exclusive=False)
@@ -919,12 +923,12 @@ class ModelPickerScreen(ModalScreen[Optional[Any]]):
                 tag = "local" if model.get("local") else ("uncensored" if model.get("uncensored") else "free")
                 mark = "*" if (provider == self.active_provider and model["id"] == self.current) else " "
                 shown.append(Option(
-                    f"{mark} {model['id']}  ·  {ctx_text} ctx  ·  {tag}",
+                    f"{mark} {model['id']}  |  {ctx_text} ctx  |  {tag}",
                     id=f"{provider}|{model['id']}",
                 ))
             if not shown:
                 continue
-            options.append(Option(f"── {label} ({len(shown)}) ──", disabled=True))
+            options.append(Option(f"-- {label} ({len(shown)}) --", disabled=True))
             if first_enabled is None:
                 first_enabled = len(options)
             options.extend(shown)
@@ -1085,7 +1089,7 @@ class SkillsManagerScreen(ModalScreen[None]):
             yield OptionList(id="skill-list")
             with VerticalScroll(classes="details"):
                 yield Static("", id="skill-details")
-            yield Static("Space/Enter toggle · n new · e edit · r reload · Esc close", classes="modal-help")
+            yield Static("Space/Enter toggle | n new | e edit | r reload | Esc close", classes="modal-help")
 
     def on_mount(self) -> None:
         self.refresh_list()
@@ -1097,7 +1101,7 @@ class SkillsManagerScreen(ModalScreen[None]):
         rows = self.app.skills.rows()
         for row in rows:
             mark = "[x]" if row["active"] else "[ ]"
-            option_list.add_option(Option(f"{mark} {row['name']}  —  {row['description']}", id=row["name"]))
+            option_list.add_option(Option(f"{mark} {row['name']}  -  {row['description']}", id=row["name"]))
         if current:
             for index, option in enumerate(option_list.options):
                 if option.id == current:
@@ -1186,7 +1190,7 @@ class ToolsManagerScreen(ModalScreen[None]):
             yield OptionList(id="tool-list")
             with VerticalScroll(classes="details"):
                 yield Static("", id="tool-details")
-            yield Static("Space/Enter toggle · i inspect · Esc close", classes="modal-help")
+            yield Static("Space/Enter toggle | i inspect | Esc close", classes="modal-help")
 
     def on_mount(self) -> None:
         self.refresh_list()
@@ -1223,7 +1227,7 @@ class ToolsManagerScreen(ModalScreen[None]):
         option_list.clear_options()
         for row in self._tools():
             mark = "[ ]" if row["id"] in self.app.disabled_tools else "[x]"
-            option_list.add_option(Option(f"{mark} {row['label']}  ·  {row['kind']}", id=row["id"]))
+            option_list.add_option(Option(f"{mark} {row['label']}  |  {row['kind']}", id=row["id"]))
         if current:
             for index, option in enumerate(option_list.options):
                 if option.id == current:
@@ -1300,7 +1304,7 @@ class MCPManagerScreen(ModalScreen[None]):
             yield OptionList(id="mcp-list")
             with VerticalScroll(classes="details"):
                 yield Static("", id="mcp-details")
-            yield Static("c connect · r restart · t tools on/off · b background/verbose · i inspect · l logs · a add · d remove · Esc close", classes="modal-help")
+            yield Static("c connect | r restart | t tools on/off | b background/verbose | i inspect | l logs | a add | d remove | Esc close", classes="modal-help")
 
     def on_mount(self) -> None:
         self.refresh_list()
@@ -1312,11 +1316,11 @@ class MCPManagerScreen(ModalScreen[None]):
         option_list.clear_options()
         rows = self.app.mcp.status_rows()
         for row in rows:
-            mark = "●" if row["status"] == "connected" else ("○" if row["status"] in ("disconnected", "disabled", "stopped") else "✗")
+            mark = "*" if row["status"] == "connected" else ("o" if row["status"] in ("disconnected", "disabled", "stopped") else "[x]")
             tools_state = "tools OFF" if row["name"] in self.app.disabled_servers else f"{row['tools']} tools"
             label = f"{mark} {row['name']}  [{row['transport']}]  {tools_state}"
             if row["error"]:
-                label += f"  — {row['error'][:60]}"
+                label += f"  - {row['error'][:60]}"
             option_list.add_option(Option(label, id=row["name"]))
         if current:
             for index, option in enumerate(option_list.options):
@@ -1465,7 +1469,7 @@ class SessionPickerScreen(ModalScreen[Optional[str]]):
             yield Static("Recent sessions", classes="modal-title")
             yield OptionList(id="session-list")
             yield Static(
-                "Enter resume · Esc close · sessions are kept on disk, nothing is deleted",
+                "Enter resume | Esc close | sessions are kept on disk, nothing is deleted",
                 classes="modal-help",
             )
 
@@ -1682,17 +1686,17 @@ class DarkGPTApp(App):
         self.refresh_status()
         self.update_context()
         self._system_note(
-            f"DarkGPT TUI v{APP_VERSION} · Enter send · Shift+Enter newline · "
-            "Tab Build/Ask (any focus) · Ctrl+P commands · Ctrl+M MCP · Ctrl+G skills · Ctrl+T tools · Ctrl+L model · "
-            "Copy: Ctrl+Alt+C / Alt+C · Paste: Ctrl+Alt+V / Alt+V · "
-            "Ctrl+Shift+C/V also work where the terminal passes them through · "
-            "Ctrl+O MCP display · Ctrl+C stop/quit\n"
-            "WEB: built-in browser is ON (Playwright → Selenium auto-fallback, saved sessions). "
-            "The agent tries fetch → search → browser → MCP before reporting failure.\n"
-            "STATE: /provider and /status show live provider/usage · /pending lists or clears queued prompts "
-            "(prompts sent while busy are queued, never dropped) · /sessions and /resume for checkpoints\n"
-            "LEARN: self-learning ON — mistakes become lessons, repeated signals become patterns. "
-            "/lessons and /patterns show them · /learn toggles capture · hack skill active (HackSkills router)"
+            f"DarkGPT TUI v{APP_VERSION} | Enter send | Shift+Enter newline | "
+            "Tab Build/Ask (any focus) | Ctrl+P commands | Ctrl+M MCP | Ctrl+G skills | Ctrl+T tools | Ctrl+L model | "
+            "Copy: Ctrl+Alt+C / Alt+C | Paste: Ctrl+Alt+V / Alt+V | "
+            "Ctrl+Shift+C/V also work where the terminal passes them through | "
+            "Ctrl+O MCP display | Ctrl+C stop/quit\n"
+            "WEB: built-in browser is ON (Playwright -> Selenium auto-fallback, saved sessions). "
+            "The agent tries fetch -> search -> browser -> MCP before reporting failure.\n"
+            "STATE: /provider and /status show live provider/usage | /pending lists or clears queued prompts "
+            "(prompts sent while busy are queued, never dropped) | /sessions and /resume for checkpoints\n"
+            "LEARN: self-learning ON - mistakes become lessons, repeated signals become patterns. "
+            "/lessons and /patterns show them | /learn toggles capture | hack skill active (HackSkills router)"
         )
 
     async def on_unmount(self) -> None:
@@ -1771,7 +1775,7 @@ class DarkGPTApp(App):
     def _header_left(self) -> str:
         cwd = os.getcwd().replace(str(Path.home()), "~")
         state = "running" if self.busy else "ready"
-        return f" {cwd}   DarkGPT v{APP_VERSION} · TUI   {state}"
+        return f" {cwd}   DarkGPT v{APP_VERSION} | TUI   {state}"
 
     def refresh_status(self) -> None:
         try:
@@ -1784,8 +1788,8 @@ class DarkGPTApp(App):
             mode_button.set_class(self.mode == "Build", "mode-build")
             mode_button.set_class(self.mode == "Ask", "mode-ask")
             self.query_one("#hint-line", Static).update(
-                f" Tab: {self.mode}  ·  Copy: Ctrl+Alt+C/Alt+C  ·  Paste: Ctrl+Alt+V/Alt+V"
-                f"  ·  Browser: ON  ·  Learn: {'ON' if self.self_learning_enabled else 'OFF'}"
+                f" Tab: {self.mode}  |  Copy: Ctrl+Alt+C/Alt+C  |  Paste: Ctrl+Alt+V/Alt+V"
+                f"  |  Browser: ON  |  Learn: {'ON' if self.self_learning_enabled else 'OFF'}"
             )
             self.query_one("#model-btn", Button).label = self.model.split("/")[-1]
             self.query_one("#footer-mcp", Static).update(
@@ -1795,8 +1799,8 @@ class DarkGPTApp(App):
             turns = len([m for m in self.messages if m.get("role") in ("user", "assistant")])
             label = f"chat #{self.conv_id}" if self.conv_id else "new chat"
             if self._session_id:
-                label += f" · save {self._session_id[:8]}"
-            self.query_one("#session-current", Static).update(f"{label} · {turns} msg")
+                label += f" | save {self._session_id[:8]}"
+            self.query_one("#session-current", Static).update(f"{label} | {turns} msg")
         except Exception:
             pass
 
@@ -1857,8 +1861,45 @@ class DarkGPTApp(App):
 
     def _system_note(self, text: str) -> None:
         conv = self.query_one("#conversation", VerticalScroll)
-        conv.mount(Static(Text(text, style="#888888")))
+        note = Static(Text(text, style="#888888"))
+        note.add_class("system-note")
+        conv.mount(note)
         conv.scroll_end(animate=False)
+
+    def _auto_compact_messages(self) -> None:
+        """Compact long in-memory history to keep long sessions fast."""
+        msgs = getattr(self, "messages", None) or []
+        total_chars = sum(len(str((m or {}).get("content") or "")) for m in msgs)
+        if len(msgs) < 28 and total_chars < 60_000:
+            return
+        try:
+            before = len(msgs)
+            self.messages = context_util.compact(msgs, keep_recent=8)
+            if len(self.messages) != before:
+                self._system_note(f"Auto-compacted context: {before} -> {len(self.messages)} messages.")
+                self.update_context()
+                self._prune_conversation_widgets()
+        except Exception:
+            pass
+
+    def _prune_conversation_widgets(self) -> None:
+        """Remove old heavy widgets from DOM to keep long TUI sessions responsive."""
+        try:
+            conv = self.query_one("#conversation", VerticalScroll)
+        except Exception:
+            return
+        children = list(conv.children)
+        # Keep recent tail; prune older Tool/Finding/Thought/Phase/Background/Error/Diff cards.
+        keep_tail = 40
+        if len(children) <= keep_tail:
+            return
+        prune_types = (ToolCard, FindingCard, ThoughtBlock, PhaseTimeline, BackgroundIndicator, DiffCard, ErrorCard, SectionLabel)
+        for child in children[:-keep_tail]:
+            if isinstance(child, prune_types):
+                try:
+                    child.remove()
+                except Exception:
+                    pass
 
     # --------------------------------------------------------------- palette
     @property
@@ -1998,7 +2039,7 @@ class DarkGPTApp(App):
                 f"  Python:  {label(py)}\n"
                 f"  TS/JS:   {label(ts)}\n"
                 f"  Rust:    {label(rs)}\n"
-                "  Tools: lsp_definition · lsp_references · lsp_diagnostics · lsp_rename\n"
+                "  Tools: lsp_definition | lsp_references | lsp_diagnostics | lsp_rename\n"
                 "  Toggle with /lsp on|off. Install pyright / typescript-language-server for full coverage."
             )
         elif name == "/subagents":
@@ -2008,8 +2049,8 @@ class DarkGPTApp(App):
                 appconfig.update(subagents_enabled=self.subagents_enabled)
             self._system_note(
                 "Isolated subagents: " + ("ON" if self.subagents_enabled else "OFF")
-                + f" · concurrency {appconfig.get('subagent_concurrency', 2)} · max 3/turn\n"
-                "  roles: explore · review · test (read-only, isolated context)\n"
+                + f" | concurrency {appconfig.get('subagent_concurrency', 2)} | max 3/turn\n"
+                "  roles: explore | review | test (read-only, isolated context)\n"
                 "  Toggle with /subagents on|off. The model delegates via the delegate tool."
             )
         elif name == "/delegates":
@@ -2019,7 +2060,7 @@ class DarkGPTApp(App):
                 self._system_note(
                     "Subagent reports:\n"
                     + "\n".join(
-                        f"- [{d.get('role')}] {d.get('task', '')[:70]} — {d.get('preview', '')[:140]}"
+                        f"- [{d.get('role')}] {d.get('task', '')[:70]} - {d.get('preview', '')[:140]}"
                         for d in self._delegates
                     )
                 )
@@ -2030,8 +2071,8 @@ class DarkGPTApp(App):
                 appconfig.update(permission_mode=self.permission_mode)
                 self._session_approvals.clear()
             self._system_note(
-                f"Permission mode: {self.permission_mode} · hooks: {'on' if self.hooks_enabled else 'off'}\n"
-                "  full: no prompts · ask: edits/shell/MCP · strict: all non-read tools\n"
+                f"Permission mode: {self.permission_mode} | hooks: {'on' if self.hooks_enabled else 'off'}\n"
+                "  full: no prompts | ask: edits/shell/MCP | strict: all non-read tools\n"
                 "  Switch with /permissions full|ask|strict. Ask mode in the footer forces strict."
             )
         elif name == "/hooks":
@@ -2066,7 +2107,7 @@ class DarkGPTApp(App):
             before = len(self.messages)
             self.messages = context_util.compact(self.messages, keep_recent=6)
             self.update_context()
-            self._system_note(f"Compacted {before} messages → {len(self.messages)} (older turns summarised).")
+            self._system_note(f"Compacted {before} messages -> {len(self.messages)} (older turns summarised).")
         elif name == "/memory":
             parts = (command or "").strip().split(maxsplit=1)
             if len(parts) > 1 and parts[1].lower() == "off":
@@ -2132,7 +2173,7 @@ class DarkGPTApp(App):
                 lines = ["Known targets:"]
                 for t in items:
                     c = t.get("counts") or {}
-                    lines.append(f"- {t.get('target')} · hosts={c.get('host',0)} services={c.get('service',0)} endpoints={c.get('endpoint',0)} findings={c.get('finding',0)}")
+                    lines.append(f"- {t.get('target')} | hosts={c.get('host',0)} services={c.get('service',0)} endpoints={c.get('endpoint',0)} findings={c.get('finding',0)}")
                 self._system_note("\n".join(lines))
         elif name == "/kg":
             from agent import knowledge_graph as kg_util
@@ -2234,7 +2275,7 @@ class DarkGPTApp(App):
                 self._system_note("No active target. Use /target <name> first.")
             else:
                 focus = (command or "").strip().split(maxsplit=1)[1] if len((command or "").strip().split(maxsplit=1)) > 1 else ""
-                self._system_note(f"Recon orchestration started for {target}…")
+                self._system_note(f"Recon orchestration started for {target}...")
                 self.run_worker(self._run_recon_cmd(target, focus), exclusive=False)
         elif name == "/route":
             parts = (command or "").strip().split(maxsplit=1)
@@ -2312,7 +2353,7 @@ class DarkGPTApp(App):
                 self._system_note(
                     "Session checkpoints:\n"
                     + "\n".join(
-                        f"- {s['id']} · {s['turns']} turns · {s['last_user'][:60]}"
+                        f"- {s['id']} | {s['turns']} turns | {s['last_user'][:60]}"
                         for s in sessions
                     )
                     + "\nRestore with /resume <id> or /resume latest."
@@ -2337,7 +2378,7 @@ class DarkGPTApp(App):
                 self.update_context()
                 self._system_note(
                     session_util.summary_text(entry)
-                    + "\n\nRestored text history only — tools are NOT re-executed."
+                    + "\n\nRestored text history only - tools are NOT re-executed."
                     + f"\nCurrent model unchanged: {self.model}"
                 )
         elif name == "/exit":
@@ -2380,7 +2421,7 @@ class DarkGPTApp(App):
                      "usage: /provider openrouter | nvidia"]
             for key, meta in PROVIDERS.items():
                 have = "set" if get_api_key(provider=key) else "MISSING"
-                lines.append(f"  {key:11} {meta['label']:12} key: {have} · {meta['env_key']}")
+                lines.append(f"  {key:11} {meta['label']:12} key: {have} | {meta['env_key']}")
             lines.append(f"add keys to {os.path.join(PROJECT_ROOT, '.env')}, then /provider <name>")
             self._system_note("\n".join(lines))
             return
@@ -2410,7 +2451,7 @@ class DarkGPTApp(App):
             lines.append("api key: set")
         else:
             lines.append(
-                f"api key: MISSING — add {cfg['env_key']}=... to "
+                f"api key: MISSING - add {cfg['env_key']}=... to "
                 f"{os.path.join(PROJECT_ROOT, '.env')} (key: {cfg['signup']})"
             )
         lines.append("use /model to pick a different model for this provider")
@@ -2442,7 +2483,7 @@ class DarkGPTApp(App):
         self.update_context()
         note = f"model: {model}"
         if provider in PROVIDERS and provider != previous:
-            note += f" · provider: {provider_config(provider)['label']}"
+            note += f" | provider: {provider_config(provider)['label']}"
         self._system_note(note)
 
     def open_mcp(self) -> None:
@@ -2595,7 +2636,7 @@ class DarkGPTApp(App):
             pass
 
     async def action_new_chat(self) -> None:
-        # Preserve the thread before clearing — nothing is ever silently lost.
+        # Preserve the thread before clearing - nothing is ever silently lost.
         if self.messages:
             entry = session_util.create(
                 os.getcwd(), self.messages, model=self.model,
@@ -2610,7 +2651,7 @@ class DarkGPTApp(App):
         self._session_id = ""
         conv = self.query_one("#conversation", VerticalScroll)
         await conv.remove_children()
-        self._system_note("New chat · open Sessions at the top to restore any earlier chat")
+        self._system_note("New chat | open Sessions at the top to restore any earlier chat")
         self.refresh_status()
         self.update_context()
 
@@ -2642,9 +2683,9 @@ class DarkGPTApp(App):
                 status = "OK"
             else:
                 err = (proc.stderr or proc.stdout or "unavailable").strip().splitlines()[-1][:120]
-                status = f"DEGRADED (fallback selenium) · {err}"
+                status = f"DEGRADED (fallback selenium) | {err}"
         except Exception as e:
-            status = f"DEGRADED (fallback selenium) · {type(e).__name__}"
+            status = f"DEGRADED (fallback selenium) | {type(e).__name__}"
         self._playwright_status_cache = (now, status)
         return status
 
@@ -2839,28 +2880,28 @@ class DarkGPTApp(App):
         running_jobs = len([j for j in bg_jobs if j.get("status") == "running"])
         lines = [
             f"model: {self.model}",
-            f"provider: {label} · key: {key_state}",
+            f"provider: {label} | key: {key_state}",
             f"mode: {self.mode}",
-            f"budget: tools_per_turn={tools_per_turn} · max_steps={max_steps} (/budget tools N, /steps N)",
-            f"mcp: {self.mcp.connected_count()}/{self.mcp.total_count()} connected · "
+            f"budget: tools_per_turn={tools_per_turn} | max_steps={max_steps} (/budget tools N, /steps N)",
+            f"mcp: {self.mcp.connected_count()}/{self.mcp.total_count()} connected | "
             f"tools: {self._enabled_tool_count()}",
             f"skills: {self.skills.active_count()} active",
-            f"browser: selenium=OK · playwright={pw}",
+            f"browser: selenium=OK | playwright={pw}",
             f"jobs: {running_jobs} running / {len(bg_jobs)} total (/jobs)",
             f"rules: {len(rules_util.load(os.getcwd()))} file(s) loaded",
-            f"sessions: {len(session_util.list_sessions(os.getcwd(), 5))} saved · "
+            f"sessions: {len(session_util.list_sessions(os.getcwd(), 5))} saved | "
             f"auto-checkpoint: {'on' if self.checkpoint_enabled else 'off'}",
-            f"scripts: {len(scripting.recent(5))} recent · "
+            f"scripts: {len(scripting.recent(5))} recent | "
             f"react fallback: {'on' if self.allow_react_fallback else 'off (native only)'}",
             f"context: {token_util.format_usage(self._usage)}",
             f"mcp display: {self.mcp_display} (Ctrl+O or /mcp-verbose)",
-            f"power: verify={'on' if self.verify_enabled else 'off'} · "
-            f"plan={'on' if self.plan_enabled else 'off'} · "
-            f"review={'on' if self.review_enabled else 'off'} · "
-            f"memory={'on' if self.memory_enabled else 'off'} · "
-            f"worktree={'on' if self.worktree_enabled else 'off'} · "
-            f"lsp={'on' if self.lsp_enabled else 'off'} · "
-            f"agents={'on' if self.subagents_enabled else 'off'} · "
+            f"power: verify={'on' if self.verify_enabled else 'off'} | "
+            f"plan={'on' if self.plan_enabled else 'off'} | "
+            f"review={'on' if self.review_enabled else 'off'} | "
+            f"memory={'on' if self.memory_enabled else 'off'} | "
+            f"worktree={'on' if self.worktree_enabled else 'off'} | "
+            f"lsp={'on' if self.lsp_enabled else 'off'} | "
+            f"agents={'on' if self.subagents_enabled else 'off'} | "
             f"perm={'strict' if self.mode == 'Ask' else self.permission_mode}",
             f"cheap model: {routing.pick_cheap_model(self.model, self.cheap_model)}",
         ]
@@ -2871,7 +2912,7 @@ class DarkGPTApp(App):
         if self._last_failed:
             lines.append(f"last failed turn: {self._last_failed[:60]}")
         if self._pending:
-            lines.append(f"queued: {len(self._pending)} prompt(s) · /pending to view or clear")
+            lines.append(f"queued: {len(self._pending)} prompt(s) | /pending to view or clear")
         self._system_note("\n".join(lines))
 
     async def action_retry(self, force: bool = False) -> None:
@@ -2889,7 +2930,7 @@ class DarkGPTApp(App):
             self._cooldown_until = 0.0
             self._cooldown_reason = ""
             appconfig.update(cooldown_until=0, cooldown_reason="")
-        self._system_note("Retrying last turn…")
+        self._system_note("Retrying last turn...")
         self._worker = self.run_prompt(prompt, echo_user=False)
 
     async def action_escape(self) -> None:
@@ -2919,7 +2960,7 @@ class DarkGPTApp(App):
         if selected:
             result = clipboard.copy_text(selected, app=self)
             if result.ok:
-                self._system_note(f"Copied selection · {result.backend}")
+                self._system_note(f"Copied selection | {result.backend}")
             else:
                 self._system_note("Could not access the system clipboard (install xclip/xsel)")
             return
@@ -2967,11 +3008,11 @@ class DarkGPTApp(App):
             except Exception:
                 text = None
         if not text:
-            self._system_note("Nothing selected — drag over text, or use /copy for the last answer")
+            self._system_note("Nothing selected - drag over text, or use /copy for the last answer")
             return
         result = clipboard.copy_text(text, app=self)
         if result.ok:
-            self.notify(f"Copied selection · {result.backend}", timeout=2)
+            self.notify(f"Copied selection | {result.backend}", timeout=2)
         else:
             self.notify(f"Copy failed: {result.detail}", severity="warning", timeout=3)
 
@@ -2985,7 +3026,7 @@ class DarkGPTApp(App):
             return
         result = clipboard.copy_text(text, app=self)
         if result.ok:
-            self.notify(f"Copied last answer · {result.backend}", timeout=2)
+            self.notify(f"Copied last answer | {result.backend}", timeout=2)
         else:
             self.notify(f"Copy failed: {result.detail}", severity="warning", timeout=3)
 
@@ -3025,7 +3066,7 @@ class DarkGPTApp(App):
         text = "\n\n".join(parts)
         result = clipboard.copy_text(text, app=self)
         if result.ok:
-            self.notify(f"Copied full conversation · {result.backend}", timeout=2)
+            self.notify(f"Copied full conversation | {result.backend}", timeout=2)
         else:
             self.notify(f"Copy failed: {result.detail}", severity="warning", timeout=3)
 
@@ -3047,8 +3088,8 @@ class DarkGPTApp(App):
             if 1 <= index <= len(self._bg_calls):
                 call = self._bg_calls[index - 1]
                 self._system_note(
-                    f"[{index}] {call.get('name', 'tool')} · "
-                    f"{'ok' if call.get('ok') else 'failed'} · "
+                    f"[{index}] {call.get('name', 'tool')} | "
+                    f"{'ok' if call.get('ok') else 'failed'} | "
                     f"{float(call.get('duration') or 0):.2f}s\n"
                     + clean_result(call.get("result") or "")[:8000]
                 )
@@ -3059,7 +3100,7 @@ class DarkGPTApp(App):
         for i, call in enumerate(self._bg_calls, 1):
             mark = "ok" if call.get("ok") else "failed"
             lines.append(
-                f"  {i}. {call.get('name', 'tool')} · {mark} · {float(call.get('duration') or 0):.2f}s"
+                f"  {i}. {call.get('name', 'tool')} | {mark} | {float(call.get('duration') or 0):.2f}s"
             )
             hint = str(call.get("hint") or "")
             if hint:
@@ -3142,8 +3183,8 @@ class DarkGPTApp(App):
         label = (self._liveness_detail or self._liveness_phase or "Working").strip()
         if len(label) > 70:
             label = label[:67] + "..."
-        extra = f" · {self._active_subagents} subagent{'s' if self._active_subagents != 1 else ''} active" if self._active_subagents else ""
-        bar.update(Text(f"{frame} {label}{extra} · {elapsed:.1f}s", style="bold #e5a93c"))
+        extra = f" | {self._active_subagents} subagent{'s' if self._active_subagents != 1 else ''} active" if self._active_subagents else ""
+        bar.update(Text(f"{frame} {label}{extra} | {elapsed:.1f}s", style="bold #e5a93c"))
 
     def _liveness_tick(self) -> None:
         if not self.busy:
@@ -3208,6 +3249,7 @@ class DarkGPTApp(App):
 
         thought: Optional[ThoughtBlock] = None
         thought_parts: List[str] = []
+        plan_box: Optional[ThoughtBlock] = None
         content_parts: List[str] = []
         cards: List[ToolCard] = []
         sub_cards: Dict[str, SubagentCard] = {}
@@ -3215,14 +3257,20 @@ class DarkGPTApp(App):
         bg: Optional[BackgroundIndicator] = None
         bg_names: Dict[str, bool] = {}
         findings_header: Optional[SectionLabel] = None
+        response_header: Optional[SectionLabel] = None
         self._bg_calls = []
         started = time.perf_counter()
         failed = False
+
+        # Auto-compact long sessions to keep TUI/LLM context fast.
+        self._auto_compact_messages()
 
         prompt = text
         if self.mode == "Ask":
             prompt = "[MODE: ASK/READ-ONLY] Do not edit files or run destructive commands. Explain, analyze, and answer.\n\n" + text
 
+        last_render = 0.0
+        render_every = 0.15  # throttle markdown re-renders for speed
         try:
             async for event in run_agent(
                 prompt,
@@ -3266,14 +3314,25 @@ class DarkGPTApp(App):
                     joined = "".join(thought_parts)
                     thought.set_thought(joined, time.perf_counter() - started)
                     # Keep the live indicator reactive while reasoning streams.
-                    spinner.set_activity("Thinking", f"reasoning · {len(joined)} chars")
-                    self._liveness_set("Thinking", f"reasoning · {len(joined)} chars")
+                    spinner.set_activity("Thinking", f"reasoning | {len(joined)} chars")
+                    self._liveness_set("Thinking", f"reasoning | {len(joined)} chars")
                 elif event_type == "thought":
                     if thought is None:
                         thought = ThoughtBlock(event.get("text", ""), float(event.get("duration") or 0.0))
                         await conv.mount(thought, before=assistant)
                     else:
                         thought.set_thought(event.get("text", ""), float(event.get("duration") or 0.0))
+                elif event_type == "plan":
+                    plan_text = str(event.get("text") or "").strip()
+                    if plan_text:
+                        if plan_box is None:
+                            plan_box = ThoughtBlock(plan_text, 0.0)
+                            plan_box.summary_prefix = "Plan"
+                            plan_box.style_name = "plan"
+                            plan_box.add_class("plan-box")
+                            await conv.mount(plan_box, before=assistant)
+                        else:
+                            plan_box.set_thought(plan_text, 0.0)
                 elif event_type in ("permission_denied", "hook_blocked"):
                     self._system_note(
                         ("Permission denied" if event_type == "permission_denied" else "Hook blocked")
@@ -3381,8 +3440,15 @@ class DarkGPTApp(App):
                                 await conv.mount(DiffCard(diff, self._last_undo_id), before=assistant)
                     timeline.end("tool", event.get("duration"), ok=ok, label=event.get("display"))
                 elif event_type == "delta":
+                    if response_header is None and (content_parts or findings_header is not None or thought is not None or plan_box is not None):
+                        response_header = SectionLabel("RESPONSE", "#8ab4f8")
+                        await conv.mount(response_header, before=assistant)
                     content_parts.append(event.get("text", ""))
-                    assistant.set_content("".join(content_parts))
+                    now = time.perf_counter()
+                    if (now - last_render) >= render_every:
+                        assistant.set_content("".join(content_parts))
+                        last_render = now
+                        conv.scroll_end(animate=False)
                 elif event_type == "notice":
                     self._system_note(str(event.get("message")))
                 elif event_type == "error":
@@ -3407,7 +3473,6 @@ class DarkGPTApp(App):
                     if not card:
                         self._system_note(f"Error: {event.get('message')}")
                         self._system_note("Run /retry to try again.")
-                conv.scroll_end(animate=False)
         except asyncio.CancelledError:
             timeline.finish_all(ok=False)
             self._system_note("Interrupted")
@@ -3423,7 +3488,11 @@ class DarkGPTApp(App):
             timeline.finish_all(ok=not failed)
             self.refresh_status()
 
-        answer = "".join(content_parts).strip()
+        # Flush any throttled streamed content.
+        final_text = "".join(content_parts)
+        if final_text:
+            assistant.set_content(final_text)
+        answer = final_text.strip()
         if answer:
             self.last_answer = answer
             self.messages.append({"role": "assistant", "content": answer})

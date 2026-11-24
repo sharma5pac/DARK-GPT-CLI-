@@ -244,46 +244,66 @@ DiffCard {
 }
 
 BackgroundIndicator {
-    height: 1;
-    margin: 0 1;
+    height: auto;
+    margin: 0 0 1 0;
     padding: 0 1;
     color: #8a8a8a;
     background: #141414;
+    border: round #2a2a2a;
 }
 
 BackgroundIndicator.running {
     color: #d4a359;
+    border: round #5a4520;
 }
 
 ActivitySpinner {
-    height: 1;
-    margin: 0 1;
+    height: auto;
+    margin: 0 0 1 0;
     padding: 0 1;
     background: #141414;
+    border: round #2a2a2a;
 }
 
 FindingCard {
-    border: solid #2e3d33;
+    border: round #2e3d33;
     background: #141a16;
     margin: 1 0;
-    padding: 0 1;
+    padding: 1;
     height: auto;
 }
 
 FindingCard:focus {
-    border: solid #6abf69;
+    border: round #6abf69;
+}
+
+.system-note {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: #8a8a8a;
 }
 
 ThoughtBlock {
     margin: 1 0;
     height: auto;
     color: #d4a359;
-    padding: 0 1;
-    border-left: thick #3a3222;
+    padding: 1;
+    border: round #5a4520;
+    background: #17130d;
 }
 
 ThoughtBlock:focus {
-    border-left: thick #e5a93c;
+    border: round #e5a93c;
+}
+
+ThoughtBlock.plan-box {
+    color: #8ab4f8;
+    border: round #355070;
+    background: #101722;
+}
+
+ThoughtBlock.plan-box:focus {
+    border: round #8ab4f8;
 }
 
 PhaseTimeline {
@@ -297,21 +317,25 @@ PhaseTimeline {
 
 .msg-user {
     margin: 1 0;
-    padding: 0 1;
+    padding: 1;
     color: #f0f0f0;
-    border-left: thick #3a3a3a;
+    border: round #3a3a3a;
+    background: #121212;
     height: auto;
 }
 
 .msg-assistant {
     margin: 1 0;
+    padding: 1;
     height: auto;
+    border: round #2f4a3a;
+    background: #101613;
 }
 
 ChatMessage Markdown, .msg-assistant Markdown {
     background: transparent;
     margin: 0;
-    padding: 0 1;
+    padding: 0;
     height: auto;
 }
 

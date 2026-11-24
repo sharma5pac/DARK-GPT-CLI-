@@ -1882,6 +1882,7 @@ async def run_agent(
         if plan:
             system += "\n\n# Plan (follow this order)\n" + plan
             messages[0]["content"] = system
+            yield {"type": "plan", "text": plan, "model": routed_model}
             yield {"type": "notice", "message": f"Planned with {routed_model}."}
 
     yield {"type": "meta", "model": model, "tool_count": len(tools)}
