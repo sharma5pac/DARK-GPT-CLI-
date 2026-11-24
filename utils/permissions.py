@@ -94,6 +94,10 @@ def risk_of(tool: str, args: Dict[str, Any] | None = None) -> str:
             return "danger" if DANGEROUS_RE.search(code) else "shell"
         command = str(args.get("command") or "")
         return "danger" if DANGEROUS_RE.search(command) else "shell"
+    if tool == "discover_tools":
+        return "safe"
+    if tool == "autonomous_route":
+        return "shell" if args.get("execute") else "safe"
     if tool == "task_kill":
         return "write"
     if tool in ("task_list", "task_wait", "task_log"):
@@ -135,6 +139,11 @@ def signature(tool: str, args: Dict[str, Any] | None = None) -> str:
     elif tool == "script":
         digest = hashlib.sha1(str(args.get("code") or "").encode("utf-8", "replace")).hexdigest()[:12]
         key += "|" + digest
+    elif tool == "autonomous_route":
+        if args.get("execute"):
+            commands = args.get("commands") or args.get("command") or ""
+            digest = hashlib.sha1(str(commands).encode("utf-8", "replace")).hexdigest()[:12]
+            key += "|" + digest
     elif tool == "apply_patch":
         digest = hashlib.sha1(str(args.get("input") or "").encode("utf-8", "replace")).hexdigest()[:12]
         key += "|" + digest
@@ -182,6 +191,12 @@ def describe(tool: str, args: Dict[str, Any] | None, risk: str) -> str:
             f"Run self-written {args.get('language', 'python')} script ({risk}):\n"
             f"{str(args.get('code') or '')[:500]}"
         )
+    if tool == "autonomous_route":
+        objective = str(args.get("objective") or "")[:300]
+        command = str(args.get("command") or "")
+        if not command and args.get("commands"):
+            command = str(args.get("commands"))[:300]
+        return f"Autonomous route ({risk}): {objective}\n{command}"
     if tool in WRITE_TOOLS:
         return f"Modify file ({risk}):\n{args.get('path', '?')}"
     if tool == "run_commands":

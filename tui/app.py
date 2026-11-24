@@ -26,7 +26,7 @@ except Exception:
 from textual.widgets.option_list import Option
 
 from agent import tokens as token_util
-from agent import jobs
+from agent import jobs, tool_discovery
 from agent.core import DEFAULT_MODEL, SYSTEM, ToolRegistry, run_agent
 from agent.skills import SkillRegistry
 from mcp_manager.client import MCPManager
@@ -59,6 +59,7 @@ COMMANDS: List[tuple[str, str]] = [
     ("/retry", "Re-run the last prompt (or /retry force)"),
     ("/pending", "Show or clear prompts queued while a turn was running"),
     ("/status", "Show model, MCP, tokens and 402 cooldown"),
+    ("/tools-scan", "Scan local tools and rank them for an objective"),
     ("/jobs", "List background tasks/jobs (/jobs <id> for log, /jobs kill <id>)"),
     ("/budget", "Show/set tool/step budget (/budget tools 60, /budget steps 40)"),
     ("/steps", "Alias for /budget steps <n>"),
@@ -254,6 +255,70 @@ class PhaseTimeline(CompactCard):
 
     def render_timeline(self) -> None:
         self.refresh_view()
+
+
+class PlanPanel(Static):
+    """Live GOAL / WORKING / FINISHED plan, docked directly above the prompt."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.goal = ""
+        self.steps: List[Dict[str, Any]] = []
+        self.add_class("plan-panel")
+        self.reset("idle")
+
+    @staticmethod
+    def _label(value: Any, limit: int = 92) -> str:
+        return " ".join(ascii_safe(value).split())[:limit]
+
+    def _paint(self) -> None:
+        text = Text()
+        if not self.goal:
+            text.append("GOAL  ", style="bold #e5a93c")
+            text.append("idle | waiting for objective", style="#555555")
+        else:
+            text.append("GOAL  ", style="bold #e5a93c")
+            text.append(self._label(self.goal, 100), style="bold #d4d4d4")
+        for step in self.steps[:6]:
+            status = str(step.get("status") or "pending").lower()
+            mark, style = {
+                "finished": ("[x]", "#7ec850"),
+                "working": ("[>]", "#8ab4f8"),
+                "error": ("[!]", "#e55353"),
+            }.get(status, ("[ ]", "#666666"))
+            text.append("\n")
+            text.append(mark + " ", style=style)
+            text.append(self._label(step.get("label") or step.get("id") or "step"), style=style)
+        if len(self.steps) > 6:
+            text.append(f"\n      ... +{len(self.steps) - 6} steps", style="#555555")
+        self.update(text)
+
+    def reset(self, goal: str = "idle") -> None:
+        self.goal = "" if goal in ("", "idle") else self._label(goal, 100)
+        self.steps = []
+        self._paint()
+
+    def start(self, goal: str) -> None:
+        self.goal = self._label(goal, 100) or "working"
+        self.steps = [
+            {"id": "understand", "label": "Understand objective", "status": "finished"},
+            {"id": "work", "label": "Execute route", "status": "working"},
+            {"id": "verify", "label": "Verify + record evidence", "status": "pending"},
+        ]
+        self._paint()
+
+    def set_plan(self, goal: str, steps: List[Dict[str, Any]]) -> None:
+        self.goal = self._label(goal, 100) or self.goal
+        self.steps = [dict(s) for s in steps if isinstance(s, dict)]
+        self._paint()
+
+    def finish(self, ok: bool = True) -> None:
+        for step in self.steps:
+            if step.get("status") == "working":
+                step["status"] = "finished" if ok else "error"
+            elif step.get("status") == "pending" and ok:
+                step["status"] = "finished"
+        self._paint()
 
 
 class ThoughtBlock(CompactCard):
@@ -1990,6 +2055,7 @@ class DarkGPTApp(App):
             yield OptionList(id="palette")
             yield Static("", id="liveness-bar")
             with Vertical(id="prompt-wrap"):
+                yield PlanPanel(id="plan-panel")
                 with Vertical(id="prompt-box"):
                     yield PromptArea("", id="prompt-input", show_line_numbers=False)
                     yield Static("", id="hint-line")
@@ -2365,6 +2431,9 @@ class DarkGPTApp(App):
             await self.action_retry(force=arg == "force")
         elif name == "/status":
             self._show_status()
+        elif name == "/tools-scan":
+            objective = " ".join(parts[1:]).strip() or "local pentest tooling"
+            await self._handle_tools_scan(objective)
         elif name == "/jobs":
             await self._handle_jobs_command(parts)
         elif name in ("/budget", "/steps"):
@@ -3340,6 +3409,39 @@ class DarkGPTApp(App):
             lines.append(f"queued: {len(self._pending)} prompt(s) | /pending to view or clear")
         self._system_note("\n".join(lines))
 
+    async def _handle_tools_scan(self, objective: str) -> None:
+        try:
+            names = [spec["function"]["name"] for spec in self._tool_registry_specs()]
+        except Exception:
+            names = []
+        found = await asyncio.to_thread(tool_discovery.discover_tools)
+        ranked = await asyncio.to_thread(
+            tool_discovery.rank_tools, objective, found,
+            mcp_tool_names=names, limit=12,
+        )
+        panel = self.query_one("#plan-panel", PlanPanel)
+        panel.set_plan(
+            f"scan: {objective}",
+            [
+                {"id": "discover", "label": f"Verified {len(found)} local binaries", "status": "finished"},
+                {"id": "rank", "label": f"Ranked {len(ranked)} matching routes", "status": "finished"},
+                {"id": "ready", "label": "Ready for autonomous_route", "status": "finished"},
+            ],
+        )
+        if not ranked:
+            self._system_note(f"No catalogued local tool matched '{objective}'. Add an explicit tool name and retry.")
+            return
+        lines = [f"tools: {len(found)} verified | ranked for: {objective}"]
+        for item in ranked[:12]:
+            route = f" | Kala: {item['mcp_tool']}" if item.get("mcp_tool") else ""
+            gui = " | GUI" if item.get("gui") else ""
+            lines.append(f"- {item['name']}: {item['category']}{route}{gui}")
+        self._system_note("\n".join(lines))
+
+    def _tool_registry_specs(self) -> List[Dict[str, Any]]:
+        registry = ToolRegistry(self.mcp, disabled=self.disabled_tools, disabled_servers=self.disabled_servers)
+        return registry.specs()
+
     async def action_retry(self, force: bool = False) -> None:
         prompt = self.last_prompt or self._last_failed
         if not prompt or self.busy:
@@ -3669,6 +3771,8 @@ class DarkGPTApp(App):
         await conv.mount(timeline)
         spinner = ActivitySpinner()
         await conv.mount(spinner)
+        plan_panel = self.query_one("#plan-panel", PlanPanel)
+        plan_panel.start(text)
 
         thought: Optional[ThoughtBlock] = None
         thought_parts: List[str] = []
@@ -3786,6 +3890,14 @@ class DarkGPTApp(App):
                             await conv.mount(plan_box, before=spinner)
                         else:
                             plan_box.set_thought(plan_text, 0.0)
+                elif event_type == "autonomous_plan":
+                    plan_panel.set_plan(
+                        str(event.get("goal") or ""),
+                        [dict(s) for s in (event.get("steps") or []) if isinstance(s, dict)],
+                    )
+                    _goal = ascii_safe(str(event.get("goal") or ""))[:70]
+                    spinner.set_activity("Plan", _goal)
+                    self._liveness_set("Plan", _goal)
                 elif event_type in ("permission_denied", "hook_blocked"):
                     await rotate_draft("Note")
                     self._system_note(
@@ -3943,6 +4055,7 @@ class DarkGPTApp(App):
             if draft is not None:
                 await rotate_draft("Note")
             spinner.finish(not failed)
+            plan_panel.finish(not failed)
             self._liveness_stop(not failed)
             self.busy = False
             timeline.finish_all(ok=not failed)

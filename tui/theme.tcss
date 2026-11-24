@@ -120,9 +120,23 @@ Screen {
 #prompt-wrap {
     dock: bottom;
     height: auto;
-    max-height: 16;
+    max-height: 22;
     background: #0d0d0d;
     padding: 0 1 1 1;
+}
+
+/* Live implementation plan sits immediately above the input box. */
+#plan-panel {
+    height: auto;
+    max-height: 8;
+    padding: 0 1;
+    border-top: solid #333333;
+    background: #101010;
+    color: #8b949e;
+}
+
+#plan-panel.hidden {
+    display: none;
 }
 
 #prompt-box {

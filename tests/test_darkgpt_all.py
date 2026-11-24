@@ -430,6 +430,31 @@ async def check_arrow_navigation():
         await pilot.press("escape"); await pilot.pause()
 
 
+async def check_plan_panel():
+    app = A.DarkGPTApp()
+    async with app.run_test(size=(140, 48)) as pilot:
+        await pilot.pause(); await pilot.pause()
+        panel = app.query_one("#plan-panel", A.PlanPanel)
+        panel.set_plan(
+            "password and encryption auditing",
+            [
+                {"id": "discover", "label": "Discover tools", "status": "finished"},
+                {"id": "probe", "label": "Probe aircrack-ng", "status": "working"},
+                {"id": "evidence", "label": "Record evidence", "status": "pending"},
+            ],
+        )
+        await pilot.pause()
+        rendered = panel.content.plain
+        assert "GOAL" in rendered
+        assert "password and encryption auditing" in rendered
+        assert "[x]" in rendered and "[>]" in rendered and "[ ]" in rendered, rendered
+        panel.finish(True)
+        await pilot.pause()
+        rendered = panel.content.plain
+        assert "[>]" not in rendered and "[ ]" not in rendered, rendered
+        ok("live GOAL/WORKING/FINISHED plan panel above prompt")
+
+
 async def main():
     check_network_resilience()
     check_self_learning()
@@ -442,6 +467,7 @@ async def main():
     await check_tui()
     await check_session_picker_delete()
     await check_arrow_navigation()
+    await check_plan_panel()
     print(f"\nALL DARKGPT CHECKS PASSED ({len(PASS)} sections)")
 
 asyncio.run(main())

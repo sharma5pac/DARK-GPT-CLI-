@@ -39,6 +39,7 @@ from utils.get_response import (
 from utils.search import SearchError, format_results, web_search
 from utils import appconfig, hooks, permissions, scripting, undo, vcs, verify
 from agent import (
+    autonomous,
     browser,
     cline_tools,
     codeintel,
@@ -53,6 +54,7 @@ from agent import (
     routing,
     skills as skills_util,
     subagents,
+    tool_discovery,
     tool_parsers,
     auth_vault,
     source_correlation,
@@ -81,6 +83,13 @@ DEFAULT_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 def _dur(start: float, end: float) -> float:
     """Monotonic elapsed time, never negative even on synthetic clocks."""
     return max(0.0, end - start)
+
+
+def _clamp_int(value: Any, low: int, high: int, default: int) -> int:
+    try:
+        return max(low, min(high, int(value)))
+    except Exception:
+        return default
 
 
 def clamp(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
@@ -323,6 +332,8 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "lsp_rename", "description": "Semantic rename across the workspace using LSP. Preview by default; pass apply=true to write changes", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}, "new_name": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "apply": {"type": "boolean"}}, "required": ["path", "symbol", "new_name"]}}},
             {"type": "function", "function": {"name": "delegate", "description": "Spawn an isolated read-only subagent (explore/review/test) to work on a focused task in parallel; returns a concise report", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
             {"type": "function", "function": {"name": "script", "description": "PREFERRED for speed: write and RUN a Python or bash helper script in one call. Use this first for recon/enumeration/fuzzing/parsing/bulk checks/multi-step automation/report building/data transforms-anything that would take multiple shell/read/grep/browser calls. Scripts are faster, repeatable, and saved as evidence under ~/.cache/darkgpt/scripts. Return exit_code, output, script_path. Use python for parsing/HTTP/JSON/logic; bash for quick CLI pipelines. Keep scripts focused; print clear findings.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string", "description": "Complete runnable script. Include imports/shebang assumptions as needed; print actionable output."}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds, default 30, max 120."}}, "required": ["language", "code"]}}},
+            {"type": "function", "function": {"name": "discover_tools", "description": "AUTO-DISCOVER verified local tools before choosing a route. Scans PATH and ~/.local/bin, returns resolved paths, capability tags, and Kala/MCP wrapper hints. Use this whenever the task names or implies a tool such as aircrack-ng, hashcat, john, openssl, nmap, ffuf, Burp Suite, Wireshark, or Ghidra.", "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "The user objective, used to rank tools."}, "tools": {"type": "string", "description": "Optional comma-separated required tool names even if not in the catalog."}, "limit": {"type": "integer"}}, "required": ["objective"]}}},
+            {"type": "function", "function": {"name": "autonomous_route", "description": "One-call autonomous tool orchestration for local pentest tools: discover -> rank -> probe top routes in parallel -> optionally execute explicit command(s) -> record evidence in the active target ledger. Emits a live GOAL/WORKING/FINISHED plan beside the prompt. Use this for any objective that names a local tool. Set execute=true only after reading --help and supply command or commands; never guess destructive commands.", "parameters": {"type": "object", "properties": {"objective": {"type": "string"}, "tool": {"type": "string", "description": "Comma-separated required tool names."}, "command": {"type": "string", "description": "One explicit command to execute when execute=true."}, "commands": {"type": "object", "description": "Optional map of tool name to explicit command, or list of {tool,command}, for multi-route execution."}, "probe": {"type": "boolean"}, "execute": {"type": "boolean"}, "timeout": {"type": "integer"}, "limit": {"type": "integer"}, "target": {"type": "string"}}, "required": ["objective"]}}},
             # ---- Cline-compatible built-in tools ---------------------------------
             {"type": "function", "function": {"name": "read_files", "description": "Cline-style batch file reader. Read several files (or line ranges) in one call. Accepts a path string, an array of paths, or {files:[{path,start_line,end_line}]} (also paths/file_paths). Line numbers are 1-based and inclusive.", "parameters": {"type": "object", "properties": {"files": {"description": "Path string, array of paths, or array of objects with path and optional 1-based inclusive start_line/end_line."}}, "required": ["files"]}}},
             {"type": "function", "function": {"name": "search_codebase", "description": "Cline-style batch codebase search. Run several grep extended-regex queries at once and return per-query matches with file:line. Prefer this over many separate grep calls.", "parameters": {"type": "object", "properties": {"queries": {"description": "A regex string or array of regex strings to search for."}}, "required": ["queries"]}}},
@@ -495,6 +506,45 @@ class ToolRegistry:
                 return clamp(json.dumps(await asyncio.to_thread(self._run_report, args), ensure_ascii=False))
             if name == "planner_update":
                 return clamp(json.dumps(await asyncio.to_thread(self._run_planner, args), ensure_ascii=False))
+            if name == "discover_tools":
+                objective = str(args.get("objective") or "")
+                required = str(args.get("tools") or "")
+                limit = _clamp_int(args.get("limit"), 1, 20, 12)
+                found = await asyncio.to_thread(
+                    tool_discovery.discover_tools,
+                    [part.strip() for part in required.split(",") if part.strip()],
+                )
+                ranked = tool_discovery.rank_tools(
+                    objective,
+                    found,
+                    mcp_tool_names=[s["function"]["name"] for s in self.specs()],
+                    limit=limit,
+                )
+                return clamp(json.dumps({
+                    "ok": True,
+                    "count": len(found),
+                    "discovered": found,
+                    "ranked": ranked,
+                    "routes": tool_discovery.build_routes(objective, ranked),
+                    "summary": tool_discovery.inventory_summary(ranked),
+                }, ensure_ascii=False))
+            if name == "autonomous_route":
+                specs = self.specs()
+                payload = await asyncio.to_thread(
+                    autonomous.run,
+                    str(args.get("objective") or ""),
+                    tool=str(args.get("tool") or ""),
+                    command=str(args.get("command") or ""),
+                    commands=args.get("commands"),
+                    probe=bool(args.get("probe", True)),
+                    execute=bool(args.get("execute", False)),
+                    timeout=_clamp_int(args.get("timeout"), 3, 120, 30),
+                    limit=_clamp_int(args.get("limit"), 1, 10, 5),
+                    target=str(args.get("target") or ""),
+                    mcp_tool_names=[s["function"]["name"] for s in specs],
+                    event=on_event,
+                )
+                return clamp(json.dumps(payload, ensure_ascii=False))
             if name == "recon_orchestrate":
                 return clamp(json.dumps(await self._run_recon_orchestrate(args, on_event=on_event), ensure_ascii=False))
             if name == "task_start":
@@ -1411,6 +1461,20 @@ HOW YOU THINK
 HOW YOU GET WHAT YOU NEED (DO NOT STOP AT THE FIRST FAILURE)
 - The goal is the *outcome*, not one tool call. If a route fails, change the route
   and keep going. Never report "could not" while an untried method remains.
+- **AUTONOMOUS LOCAL TOOL ROUTING:** for any objective that names or implies a
+  local tool (aircrack-ng, hashcat, john, openssl, nmap, ffuf, sqlmap, Burp Suite,
+  Wireshark, Ghidra, etc.), call `discover_tools` or `autonomous_route` FIRST.
+  Never assume only the hardcoded tool list. `autonomous_route` verifies which
+  binaries exist, maps Kala/MCP wrappers, probes the top routes in parallel, and
+  returns CLI/GUI/script strategies. Its GOAL/WORKING/FINISHED plan is shown live
+  beside the prompt.
+- When the user names a tool, it is a required route: pass it in the `tool` field
+  even if keyword ranking misses it. After reading `--help`, run the smallest
+  explicit command with `autonomous_route(execute=true, command=...)`, or pass a
+  `commands` map to run several ranked routes. Never guess a destructive command.
+- GUI-only tools use agent-desktop: desktop_launch -> desktop_wait -> desktop_snapshot
+  -> click/type -> snapshot again. Record the observed response, not the click, as
+  evidence. If one route fails, pivot to the next ranked route immediately.
 - For web/pentest work, pick the fastest reliable route. **Script-first when practical:**
   1. `script` (python/bash) for fast repeatable checks: HTTP probes, header/endpoint
      enumeration, parsing responses, JSON/HTML extraction, auth flow testing, bulk
@@ -1638,12 +1702,15 @@ async def _execute_tool(
     }
     queue: asyncio.Queue = asyncio.Queue()
     sub_events: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
     def emit(stream: str, text: str) -> None:
         queue.put_nowait((stream, text))
 
     def emit_event(event: Dict[str, Any]) -> None:
-        sub_events.put_nowait(event)
+        # autonomous.run dispatches from a worker thread; queue.put_nowait is
+        # not thread-safe, so hop back onto the event loop before enqueueing.
+        loop.call_soon_threadsafe(sub_events.put_nowait, dict(event))
 
     try:
         task = asyncio.create_task(registry.run(name, args, emit=emit, on_event=emit_event))
