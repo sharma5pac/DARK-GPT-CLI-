@@ -539,7 +539,7 @@ class ToolRegistry:
                     probe=bool(args.get("probe", True)),
                     execute=bool(args.get("execute", False)),
                     timeout=_clamp_int(args.get("timeout"), 3, 120, 30),
-                    limit=_clamp_int(args.get("limit"), 1, 10, 5),
+                    limit=_clamp_int(args.get("limit"), 1, 16, 8),
                     target=str(args.get("target") or ""),
                     mcp_tool_names=[s["function"]["name"] for s in specs],
                     event=on_event,
@@ -1475,6 +1475,25 @@ HOW YOU GET WHAT YOU NEED (DO NOT STOP AT THE FIRST FAILURE)
 - GUI-only tools use agent-desktop: desktop_launch -> desktop_wait -> desktop_snapshot
   -> click/type -> snapshot again. Record the observed response, not the click, as
   evidence. If one route fails, pivot to the next ranked route immediately.
+- **FIRMWARE / HARDWARE REVERSING:** for router/IoT/embedded/flash/PCB objectives,
+  discover tools first, then work in stages and keep every artifact under the
+  active target evidence directory:
+  1. Identify and hash the image with `file`, `xxd`, `strings`, `sha256sum`.
+  2. Extract with `binwalk -e`, `unsquashfs`, `7z`, `cpio`, or `dd` only after
+     reading `--help`. Never modify the source image.
+  3. Read configs, certificates, keys, scripts and init with bounded scripts;
+     record paths and hashes, not just console text.
+  4. Reverse binaries with `readelf`/`objdump`/`nm`, cross-toolchains such as
+     `arm-none-eabi-*`, `radare2`/`rizin`, or Ghidra via agent-desktop.
+  5. Emulate cautiously with `qemu-*`, `chroot`, `proot`, `losetup` or `debugfs`.
+     Prefer isolated, read-only, offline runs; avoid real network side effects.
+  6. For live hardware, enumerate with `lspci`, `lsusb`, `i2cdetect`, `lshw`,
+     `dmidecode`, `smartctl`; read buses with `i2cdump`/`i2cget` and capture
+     logic with `sigrok-cli`/`pulseview`. Use `flashrom`, `openocd`, `esptool`,
+     `avrdude`, or `dfu-util` only with explicit, minimal, reversible commands.
+     Never flash/write firmware or alter device state without clear confirmation.
+  7. Feed extracted files, hashes, symbols, devices, and observed responses into
+     the knowledge graph/evidence ledger. If one route fails, pivot to the next.
 - For web/pentest work, pick the fastest reliable route. **Script-first when practical:**
   1. `script` (python/bash) for fast repeatable checks: HTTP probes, header/endpoint
      enumeration, parsing responses, JSON/HTML extraction, auth flow testing, bulk

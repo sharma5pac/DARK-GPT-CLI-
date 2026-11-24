@@ -213,7 +213,7 @@ def run(
     probe: bool = True,
     execute: bool = False,
     timeout: int = 30,
-    limit: int = 5,
+    limit: int = 8,
     target: str = "",
     mcp_tool_names: Optional[Sequence[str]] = None,
     event: EventFn = None,

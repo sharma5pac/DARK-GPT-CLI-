@@ -43,6 +43,10 @@ WRITE_TOOLS = {
 
 DANGEROUS = [
     r"\brm\s+-rf?\b", r"\bsudo\b", r"\bmkfs\b", r"\bdd\s+if=",
+    r"\bdd\s+[^\n]*\bof=/dev/", r"\bflashrom\b[^\n]*\s-w\b",
+    r"\besptool(?:\.py)?\b[^\n]*write_flash", r"\bavrdude\b[^\n]*-U\b",
+    r"\bopenocd\b[^\n]*(?:write|program|flash_image)", r"\bi2cset\b",
+    r"\bnvme\b[^\n]*format", r"\bsmartctl\b[^\n]*-s\b",
     r"\bcurl\b[^\n]*\|\s*(ba)?sh", r"\bwget\b[^\n]*\|\s*(ba)?sh",
     r"\bchmod\s+777\b", r"\bgit\s+push\s+.*--force", r"\b:(?:\(\)\s*\{|\(){.*\|.*&.*};?\)\s*;?\s*\$",
     r">\s*/dev/sd[a-z]", r"\bshutdown\b", r"\breboot\b",
@@ -97,7 +101,10 @@ def risk_of(tool: str, args: Dict[str, Any] | None = None) -> str:
     if tool == "discover_tools":
         return "safe"
     if tool == "autonomous_route":
-        return "shell" if args.get("execute") else "safe"
+        if not args.get("execute"):
+            return "safe"
+        commands = f"{args.get('command') or ''} {args.get('commands') or ''}"
+        return "danger" if DANGEROUS_RE.search(commands) else "shell"
     if tool == "task_kill":
         return "write"
     if tool in ("task_list", "task_wait", "task_log"):

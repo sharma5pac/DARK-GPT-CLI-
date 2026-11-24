@@ -49,13 +49,74 @@ TOOL_CATALOG: Dict[str, Dict[str, Any]] = {
     "tcpdump": {"category": "packet analysis", "tags": ["network", "capture", "packets", "cli"], "gui": False, "aliases": []},
     "jsql-injection": {"category": "database auditing", "tags": ["web", "sqli", "database", "gui", "injection"], "gui": True, "aliases": ["jsql"]},
     "recon-ng": {"category": "recon", "tags": ["recon", "osint", "web", "gui"], "gui": True, "aliases": []},
-    "ghidra": {"category": "reverse engineering", "tags": ["reverse", "binary", "decompile", "gui", "malware"], "gui": True, "aliases": []},
-    "binwalk": {"category": "reverse engineering", "tags": ["reverse", "firmware", "binary", "extract"], "gui": False, "aliases": []},
-    "strings": {"category": "reverse engineering", "tags": ["reverse", "binary", "strings", "static"], "gui": False, "aliases": []},
+    "strings": {"category": "reverse engineering", "tags": ["reverse", "binary", "strings", "static", "firmware"], "gui": False, "aliases": []},
     "volatility": {"category": "forensics", "tags": ["forensics", "memory", "ram", "incident"], "gui": False, "aliases": ["volatility3"]},
     "bloodhound": {"category": "active directory auditing", "tags": ["active directory", "graph", "gui", "ad"], "gui": True, "aliases": []},
     "bettercap": {"category": "network interception", "tags": ["network", "mitm", "capture", "wifi"], "gui": False, "aliases": []},
     "responder": {"category": "network interception", "tags": ["network", "auth", "llmnr", "poison"], "gui": False, "aliases": []},
+
+    # ---- Firmware / embedded reversing ---------------------------------------
+    "unsquashfs": {"category": "firmware extraction & analysis", "tags": ["firmware", "squashfs", "filesystem", "extract", "rootfs", "embedded", "reverse"], "gui": False, "aliases": []},
+    "mksquashfs": {"category": "firmware extraction & analysis", "tags": ["firmware", "squashfs", "filesystem", "rebuild", "embedded"], "gui": False, "aliases": []},
+    "cpio": {"category": "firmware extraction & analysis", "tags": ["firmware", "archive", "extract", "initramfs", "rootfs"], "gui": False, "aliases": []},
+    "7z": {"category": "firmware extraction & analysis", "tags": ["firmware", "archive", "extract", "compress", "reverse"], "gui": False, "aliases": ["7za", "p7zip", "7zr"]},
+    "unzip": {"category": "firmware extraction & analysis", "tags": ["firmware", "archive", "extract", "zip"], "gui": False, "aliases": []},
+    "xz": {"category": "firmware extraction & analysis", "tags": ["firmware", "compress", "lzma", "extract"], "gui": False, "aliases": ["unxz", "xzcat"]},
+    "zstd": {"category": "firmware extraction & analysis", "tags": ["firmware", "compress", "extract", "zstandard"], "gui": False, "aliases": ["unzstd"]},
+    "xxd": {"category": "binary inspection", "tags": ["firmware", "hex", "dump", "binary", "reverse", "embedded"], "gui": False, "aliases": []},
+    "hexdump": {"category": "binary inspection", "tags": ["firmware", "hex", "dump", "binary", "reverse"], "gui": False, "aliases": ["hd"]},
+    "od": {"category": "binary inspection", "tags": ["firmware", "hex", "octal", "dump", "binary"], "gui": False, "aliases": []},
+    "file": {"category": "binary inspection", "tags": ["firmware", "identify", "magic", "binary", "reverse"], "gui": False, "aliases": []},
+    "dd": {"category": "firmware imaging", "tags": ["firmware", "dump", "image", "raw", "flash", "hardware"], "gui": False, "aliases": ["dcfldd"]},
+    "fmk": {"category": "firmware extraction & analysis", "tags": ["firmware", "firmware-mod-kit", "extract", "rebuild", "embedded", "router"], "gui": False, "aliases": ["firmware-mod-kit"]},
+    "binwalk": {"category": "firmware extraction & analysis", "tags": ["reverse", "firmware", "binary", "extract", "embedded", "iot", "router", "squashfs", "filesystem"], "gui": False, "aliases": []},
+    "readelf": {"category": "firmware binary analysis", "tags": ["firmware", "elf", "binary", "reverse", "headers", "embedded"], "gui": False, "aliases": ["llvm-readobj"]},
+    "objdump": {"category": "firmware binary analysis", "tags": ["firmware", "disassembly", "binary", "reverse", "elf", "embedded"], "gui": False, "aliases": ["llvm-objdump"]},
+    "nm": {"category": "firmware binary analysis", "tags": ["firmware", "symbols", "binary", "reverse", "embedded"], "gui": False, "aliases": []},
+    "objcopy": {"category": "firmware binary analysis", "tags": ["firmware", "binary", "reverse", "strip", "embedded"], "gui": False, "aliases": []},
+    "gdb": {"category": "firmware debugging", "tags": ["firmware", "debug", "embedded", "reverse", "jtag", "hardware"], "gui": False, "aliases": ["gdb-multiarch"]},
+    "radare2": {"category": "firmware binary analysis", "tags": ["firmware", "reverse", "disassembly", "decompile", "binary", "embedded"], "gui": False, "aliases": ["r2", "rabin2"]},
+    "rizin": {"category": "firmware binary analysis", "tags": ["firmware", "reverse", "disassembly", "decompile", "binary", "embedded"], "gui": False, "aliases": ["rz-bin"]},
+    "ghidra": {"category": "firmware binary analysis", "tags": ["reverse", "firmware", "binary", "decompile", "gui", "embedded", "malware"], "gui": True, "aliases": ["ghidraRun"]},
+    "qemu-system-arm": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "arm", "embedded", "rootfs"], "gui": False, "aliases": []},
+    "qemu-system-aarch64": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "aarch64", "arm", "embedded"], "gui": False, "aliases": []},
+    "qemu-system-mips": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "mips", "router", "embedded"], "gui": False, "aliases": []},
+    "qemu-system-mipsel": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "mips", "mipsel", "router", "embedded"], "gui": False, "aliases": []},
+    "qemu-arm": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "arm", "user-mode", "embedded"], "gui": False, "aliases": []},
+    "qemu-mips": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "mips", "user-mode", "router"], "gui": False, "aliases": []},
+    "qemu-mipsel": {"category": "firmware emulation", "tags": ["firmware", "qemu", "emulate", "mipsel", "user-mode", "router"], "gui": False, "aliases": []},
+    "chroot": {"category": "firmware emulation", "tags": ["firmware", "rootfs", "chroot", "emulate", "embedded"], "gui": False, "aliases": []},
+    "proot": {"category": "firmware emulation", "tags": ["firmware", "rootfs", "emulate", "embedded"], "gui": False, "aliases": []},
+    "losetup": {"category": "firmware emulation", "tags": ["firmware", "loop", "image", "mount", "embedded"], "gui": False, "aliases": []},
+    "debugfs": {"category": "firmware emulation", "tags": ["firmware", "filesystem", "ext", "image", "embedded"], "gui": False, "aliases": []},
+
+    # ---- Hardware / bus / device reversing -----------------------------------
+    "lspci": {"category": "hardware bus & device analysis", "tags": ["hardware", "pci", "device", "enumerate", "reverse"], "gui": False, "aliases": []},
+    "lsusb": {"category": "hardware bus & device analysis", "tags": ["hardware", "usb", "device", "enumerate", "reverse"], "gui": False, "aliases": []},
+    "lsblk": {"category": "hardware bus & device analysis", "tags": ["hardware", "block", "device", "storage", "enumerate"], "gui": False, "aliases": []},
+    "lshw": {"category": "hardware bus & device analysis", "tags": ["hardware", "device", "enumerate", "inventory", "reverse"], "gui": False, "aliases": []},
+    "dmidecode": {"category": "hardware bus & device analysis", "tags": ["hardware", "dmi", "bios", "firmware", "enumerate"], "gui": False, "aliases": []},
+    "i2cdetect": {"category": "hardware bus & device analysis", "tags": ["hardware", "i2c", "bus", "device", "enumerate", "reverse"], "gui": False, "aliases": []},
+    "i2cdump": {"category": "hardware bus & device analysis", "tags": ["hardware", "i2c", "bus", "dump", "device", "reverse"], "gui": False, "aliases": []},
+    "i2cget": {"category": "hardware bus & device analysis", "tags": ["hardware", "i2c", "bus", "read", "device"], "gui": False, "aliases": []},
+    "i2cset": {"category": "hardware bus & device analysis", "tags": ["hardware", "i2c", "bus", "write", "device"], "gui": False, "aliases": []},
+    "flashrom": {"category": "hardware flash tooling", "tags": ["hardware", "firmware", "flash", "spi", "dump", "rom", "reverse"], "gui": False, "aliases": []},
+    "openocd": {"category": "hardware debugging", "tags": ["hardware", "jtag", "swd", "debug", "flash", "embedded", "reverse"], "gui": False, "aliases": []},
+    "urjtag": {"category": "hardware debugging", "tags": ["hardware", "jtag", "device", "reverse", "embedded"], "gui": False, "aliases": []},
+    "avrdude": {"category": "hardware flash tooling", "tags": ["hardware", "avr", "flash", "program", "embedded", "reverse"], "gui": False, "aliases": []},
+    "esptool": {"category": "hardware flash tooling", "tags": ["hardware", "esp32", "esp8266", "flash", "firmware", "dump", "embedded"], "gui": False, "aliases": ["esptool.py"]},
+    "picocom": {"category": "hardware serial tooling", "tags": ["hardware", "serial", "uart", "console", "device", "reverse"], "gui": False, "aliases": ["minicom", "screen"]},
+    "socat": {"category": "hardware serial tooling", "tags": ["hardware", "serial", "socket", "relay", "device"], "gui": False, "aliases": []},
+    "stty": {"category": "hardware serial tooling", "tags": ["hardware", "serial", "uart", "console", "device"], "gui": False, "aliases": []},
+    "sigrok-cli": {"category": "hardware signal analysis", "tags": ["hardware", "logic", "analyzer", "signal", "spi", "i2c", "reverse"], "gui": False, "aliases": []},
+    "pulseview": {"category": "hardware signal analysis", "tags": ["hardware", "logic", "analyzer", "signal", "gui", "reverse"], "gui": True, "aliases": []},
+    "rtl_fm": {"category": "hardware SDR tooling", "tags": ["hardware", "sdr", "radio", "rtl-sdr", "signal", "reverse"], "gui": False, "aliases": ["rtl_sdr"]},
+    "hackrf_info": {"category": "hardware SDR tooling", "tags": ["hardware", "sdr", "radio", "hackrf", "signal", "reverse"], "gui": False, "aliases": []},
+    "dfu-util": {"category": "hardware flash tooling", "tags": ["hardware", "usb", "dfu", "flash", "firmware", "embedded"], "gui": False, "aliases": []},
+    "smartctl": {"category": "hardware storage analysis", "tags": ["hardware", "storage", "nvme", "disk", "firmware", "device"], "gui": False, "aliases": []},
+    "nvme": {"category": "hardware storage analysis", "tags": ["hardware", "nvme", "storage", "firmware", "device"], "gui": False, "aliases": []},
+    "hdparm": {"category": "hardware storage analysis", "tags": ["hardware", "storage", "ata", "device", "firmware"], "gui": False, "aliases": []},
+    "arduino-cli": {"category": "hardware embedded tooling", "tags": ["hardware", "arduino", "embedded", "mcu", "program"], "gui": False, "aliases": ["platformio"]},
 }
 
 _WORD_RE = re.compile(r"[a-z0-9+_.-]+")
@@ -65,6 +126,54 @@ def _norm(text: Any) -> str:
     return str(text or "").lower().strip()
 
 
+_INFER_RULES = [
+    ("squashfs", "firmware extraction & analysis", ["firmware", "squashfs", "filesystem", "extract", "rootfs"], False),
+    ("binwalk", "firmware extraction & analysis", ["firmware", "extract", "embedded", "reverse"], False),
+    ("firmware", "firmware extraction & analysis", ["firmware", "embedded", "reverse"], False),
+    ("objdump", "firmware binary analysis", ["firmware", "disassembly", "binary", "reverse", "embedded"], False),
+    ("readelf", "firmware binary analysis", ["firmware", "elf", "headers", "binary", "embedded"], False),
+    ("readobj", "firmware binary analysis", ["firmware", "elf", "headers", "binary", "embedded"], False),
+    ("gdb", "firmware debugging", ["firmware", "debug", "jtag", "embedded", "reverse"], False),
+    ("qemu", "firmware emulation", ["firmware", "qemu", "emulate", "rootfs", "embedded"], False),
+    ("openocd", "hardware debugging", ["hardware", "jtag", "swd", "embedded", "reverse"], False),
+    ("jtag", "hardware debugging", ["hardware", "jtag", "embedded", "reverse"], False),
+    ("esptool", "hardware flash tooling", ["hardware", "esp32", "esp8266", "flash", "firmware"], False),
+    ("flashrom", "hardware flash tooling", ["hardware", "flash", "spi", "rom", "firmware"], False),
+    ("avrdude", "hardware flash tooling", ["hardware", "avr", "mcu", "flash", "embedded"], False),
+    ("dfu", "hardware flash tooling", ["hardware", "usb", "dfu", "flash", "firmware"], False),
+    ("i2c", "hardware bus & device analysis", ["hardware", "i2c", "bus", "device", "reverse"], False),
+    ("spi", "hardware bus & device analysis", ["hardware", "spi", "bus", "device", "reverse"], False),
+    ("i2s", "hardware bus & device analysis", ["hardware", "i2s", "bus", "device"], False),
+    ("serial", "hardware serial tooling", ["hardware", "serial", "uart", "console", "device"], False),
+    ("uart", "hardware serial tooling", ["hardware", "serial", "uart", "console", "device"], False),
+    ("logic", "hardware signal analysis", ["hardware", "logic", "analyzer", "signal", "reverse"], False),
+    ("sigrok", "hardware signal analysis", ["hardware", "logic", "analyzer", "signal"], False),
+    ("rtl", "hardware SDR tooling", ["hardware", "sdr", "radio", "signal"], False),
+    ("hackrf", "hardware SDR tooling", ["hardware", "sdr", "radio", "signal"], False),
+    ("mcu", "hardware embedded tooling", ["hardware", "mcu", "embedded", "program"], False),
+    ("arm-none-eabi", "hardware embedded tooling", ["hardware", "arm", "embedded", "cross-compile"], False),
+    ("aarch64-linux", "hardware embedded tooling", ["hardware", "aarch64", "embedded", "cross-compile"], False),
+    ("mips-linux", "hardware embedded tooling", ["hardware", "mips", "router", "cross-compile"], False),
+    ("riscv", "hardware embedded tooling", ["hardware", "riscv", "embedded", "cross-compile"], False),
+]
+
+
+def _infer_entry(name: str) -> Optional[Dict[str, Any]]:
+    """Classify cross-tool binaries such as arm-none-eabi-objdump."""
+    needle = _norm(name)
+    for marker, category, tags, gui in _INFER_RULES:
+        if marker in needle:
+            return {
+                "name": name,
+                "category": category,
+                "tags": list(tags),
+                "gui": gui,
+                "aliases": [],
+                "inferred": True,
+            }
+    return None
+
+
 def _catalog_entry(name: str) -> Dict[str, Any]:
     canonical = _norm(name)
     for key, meta in TOOL_CATALOG.items():
@@ -72,6 +181,9 @@ def _catalog_entry(name: str) -> Dict[str, Any]:
             entry = dict(meta)
             entry["name"] = key
             return entry
+    inferred = _infer_entry(name)
+    if inferred is not None:
+        return inferred
     return {
         "name": name,
         "category": "general",
@@ -172,7 +284,7 @@ def rank_tools(
     return ranked[: max(0, limit)]
 
 
-def build_routes(task: str, ranked: Sequence[Dict[str, Any]], limit: int = 3) -> List[Dict[str, Any]]:
+def build_routes(task: str, ranked: Sequence[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
     """Produce bounded, ordered strategies for the top matching tools."""
     routes: List[Dict[str, Any]] = []
     for tool in ranked[: max(0, limit)]:

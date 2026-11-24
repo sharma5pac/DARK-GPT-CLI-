@@ -29,6 +29,33 @@ def test_discovery_ranks_local_password_tools(monkeypatch):
     print("PASS local tool discovery ranks aircrack-ng and alternates")
 
 
+def test_discovery_ranks_firmware_and_hardware_tools(monkeypatch):
+    available = {
+        "binwalk", "unsquashfs", "readelf", "objdump", "radare2", "ghidra",
+        "qemu-system-mips", "chroot", "flashrom", "openocd", "esptool",
+        "lspci", "lsusb", "i2cdetect", "sigrok-cli", "arm-none-eabi-objdump",
+    }
+    monkeypatch.setattr(
+        tool_discovery.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in available else None,
+    )
+    tools = tool_discovery.discover_tools(["arm-none-eabi-objdump"])
+    by_name = {item["name"]: item for item in tools}
+    assert by_name["arm-none-eabi-objdump"]["tags"] and "firmware" in by_name["arm-none-eabi-objdump"]["tags"]
+    ranked = tool_discovery.rank_tools(
+        "reverse hardware and firmware from a router image with binwalk",
+        tools,
+        limit=20,
+    )
+    names = [item["name"] for item in ranked]
+    assert names[0] == "binwalk", names
+    assert {"flashrom", "qemu-system-mips", "unsquashfs"}.issubset(set(names)), names
+    routes = tool_discovery.build_routes("reverse firmware", ranked)
+    assert any(route["route"] == "cli" for route in routes)
+    print("PASS firmware/hardware tool discovery and ranking")
+
+
 def test_autonomous_plan_and_multi_route_commands(monkeypatch):
     fake_tools = [{
         "name": "aircrack-ng",
@@ -76,6 +103,12 @@ def test_autonomous_tool_registration_and_risk():
     assert permissions.risk_of("discover_tools", {}) == "safe"
     assert permissions.risk_of("autonomous_route", {}) == "safe"
     assert permissions.risk_of("autonomous_route", {"execute": True}) == "shell"
+    assert permissions.risk_of("autonomous_route", {
+        "execute": True, "command": "flashrom --read dump.rom",
+    }) == "shell"
+    assert permissions.risk_of("autonomous_route", {
+        "execute": True, "command": "flashrom -w new.rom",
+    }) == "danger"
     print("PASS autonomous tools registered and permission-gated")
 
 

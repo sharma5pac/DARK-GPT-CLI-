@@ -26,7 +26,7 @@ from agent import tool_discovery
 from utils import appconfig
 
 CACHE_PATH = Path.home() / ".cache" / "darkgpt" / "tool_inventory.json"
-VERSION = 2
+VERSION = 3
 DEFAULT_MAX_AGE = 86400
 MAX_BINARIES = 4000
 MAX_APPS = 400
@@ -311,6 +311,18 @@ def _names(items: Sequence[Dict[str, Any]], limit: int) -> List[str]:
     return [str(item.get("name") or "") for item in items[:limit] if item.get("name")]
 
 
+_REVERSE_TAGS = {
+    "firmware", "hardware", "embedded", "jtag", "swd", "spi", "i2c",
+    "flash", "rom", "squashfs", "rootfs", "qemu", "emulate", "disassembly",
+    "decompile", "logic", "analyzer", "sdr", "serial", "uart", "mcu",
+}
+
+
+def _reverse_tools(items: Sequence[Dict[str, Any]], limit: int = 24) -> List[str]:
+    matched = [item for item in items if _REVERSE_TAGS.intersection(set(item.get("tags") or []))]
+    return _names(matched, limit)
+
+
 def startup_summary(data: Optional[Dict[str, Any]] = None, scanned: bool = False) -> str:
     data = data or load()
     label = "FIRST-LAUNCH SCAN" if scanned else "CACHED INVENTORY"
@@ -325,8 +337,11 @@ def startup_summary(data: Optional[Dict[str, Any]] = None, scanned: bool = False
         f"{data.get('skill_count', 0)} skill bundles, "
         f"{data.get('folder_count', 0)} work folders | cached {when}",
     ]
+    reverse = _reverse_tools(data.get("relevant") or [], 16)
     if relevant:
         lines.append("Relevant tools: " + ", ".join(relevant))
+    if reverse:
+        lines.append("Hardware/firmware reversing: " + ", ".join(reverse))
     if apps:
         lines.append("Relevant GUI apps: " + ", ".join(apps))
     lines.append("The model can call discover_tools/autonomous_route. /tools-scan refresh rescans.")
@@ -347,8 +362,11 @@ def context_summary(data: Optional[Dict[str, Any]] = None, limit: int = 2200) ->
         f"Verified: {data.get('binary_count', 0)} binaries, {data.get('relevant_count', 0)} security/relevant tools, "
         f"{data.get('app_count', 0)} GUI apps, {data.get('skill_count', 0)} skill bundles.",
     ]
+    reverse = _reverse_tools(data.get("relevant") or [], 28)
     if relevant:
         lines.append("Security tools: " + ", ".join(relevant))
+    if reverse:
+        lines.append("Hardware/firmware reversing: " + ", ".join(reverse))
     if app_names:
         lines.append("GUI apps: " + ", ".join(app_names))
     if skill_names:

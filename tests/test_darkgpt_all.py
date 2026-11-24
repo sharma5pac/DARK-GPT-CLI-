@@ -328,6 +328,7 @@ async def check_tui():
         assert C.DEFAULT_TOOLS_PER_TURN >= 40
         assert C.DEFAULT_MAX_STEPS >= 28
         assert (C.MAX_VERIFY_ROUNDS, C.MAX_REVIEW_ROUNDS, C.MAX_SUBAGENTS_PER_TURN) == (2, 1, 3)
+        assert "FIRMWARE / HARDWARE REVERSING" in C.SYSTEM
         ok("guardrails configured (repeat/tools/steps/verify/review/subagents)")
     A.DarkGPTApp._system_note = _ORIGINAL_SYSTEM_NOTE
 

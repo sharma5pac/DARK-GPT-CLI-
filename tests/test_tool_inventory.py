@@ -13,14 +13,15 @@ def _fake_inventory() -> dict:
         "version": ti.VERSION,
         "scanned_at": time.time(),
         "binary_count": 3,
-        "relevant_count": 2,
+        "relevant_count": 3,
         "app_count": 1,
         "skill_count": 2,
         "folder_count": 2,
         "binaries": [],
         "relevant": [
-            {"name": "aircrack-ng", "path": "/usr/bin/aircrack-ng", "relevant": True},
-            {"name": "hashcat", "path": "/usr/bin/hashcat", "relevant": True},
+            {"name": "aircrack-ng", "path": "/usr/bin/aircrack-ng", "relevant": True, "tags": ["password"]},
+            {"name": "hashcat", "path": "/usr/bin/hashcat", "relevant": True, "tags": ["password"]},
+            {"name": "flashrom", "path": "/usr/bin/flashrom", "relevant": True, "tags": ["hardware", "firmware", "flash"]},
         ],
         "apps": [{"name": "Burp Suite", "relevant": True, "gui": True}],
         "skills": [{"name": "hack"}, {"name": "report"}],
@@ -36,6 +37,7 @@ def test_inventory_cache_and_summary(monkeypatch, tmp_path):
             {"name": "aircrack-ng", "path": "/usr/bin/aircrack-ng", "relevant": True, "category": "password & encryption auditing", "tags": ["password"]},
             {"name": "hashcat", "path": "/usr/bin/hashcat", "relevant": True, "category": "password & encryption auditing", "tags": ["hash"]},
             {"name": "random", "path": "/usr/bin/random", "relevant": False, "category": "", "tags": []},
+            {"name": "flashrom", "path": "/usr/bin/flashrom", "relevant": True, "category": "hardware flash tooling", "tags": ["hardware", "firmware", "flash"]},
         ],
     )
     monkeypatch.setattr(ti, "scan_desktop_apps", lambda: [{"name": "Burp Suite", "relevant": True, "gui": True}])
@@ -45,17 +47,19 @@ def test_inventory_cache_and_summary(monkeypatch, tmp_path):
     data, scanned = ti.ensure_fresh()
     assert scanned is True
     assert ti.CACHE_PATH.exists()
-    assert data["binary_count"] == 3
-    assert data["relevant_count"] == 2
+    assert data["binary_count"] == 4
+    assert data["relevant_count"] == 3
 
     data2, scanned2 = ti.ensure_fresh()
     assert scanned2 is False
-    assert data2["relevant_count"] == 2
+    assert data2["relevant_count"] == 3
 
     summary = ti.context_summary(data2)
     assert "capability inventory" in summary.lower()
     assert "aircrack-ng" in summary and "hashcat" in summary
     assert "Burp Suite" in summary
+    assert "Hardware/firmware reversing" in summary
+    assert "flashrom" in summary
 
     data3, scanned3 = ti.ensure_fresh(force=True)
     assert scanned3 is True and data3["app_count"] == 1
