@@ -328,6 +328,11 @@ ChatMessage Static {
 
 /* ----------------------------------------------------------------- modals */
 
+ModalScreen {
+    align: center middle;
+    background: #050505cc;
+}
+
 .modal {
     width: 70%;
     max-width: 110;
@@ -356,6 +361,8 @@ ChatMessage Static {
     width: 100%;
     height: 1;
     margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: wide #e5a93c;
     color: #e5a93c;
     text-style: bold;
     content-align: left middle;
@@ -363,10 +370,16 @@ ChatMessage Static {
 
 .modal-help {
     width: 100%;
-    height: 1;
+    height: auto;
+    min-height: 1;
     margin: 1 0 0 0;
     color: #777777;
     content-align: left middle;
+}
+
+#session-summary {
+    color: #e5a93c;
+    margin: 0 0 1 0;
 }
 
 .modal Input {
@@ -389,9 +402,15 @@ ChatMessage Static {
     color: #d4d4d4;
 }
 
+.modal OptionList:focus {
+    border: round #e5a93c;
+}
+
 .modal OptionList > .option-list--option-highlighted {
     background: #2d2618;
     color: #e5a93c;
+    text-style: bold;
+    border-left: wide #e5a93c;
 }
 
 .details {
@@ -437,6 +456,12 @@ ChatMessage Static {
 .button-row Button:hover {
     background: #333333;
     color: #ffffff;
+}
+
+.button-row Button:focus {
+    background: #8a6a1f;
+    color: #ffffff;
+    text-style: bold;
 }
 
 .button-row Button.-primary {

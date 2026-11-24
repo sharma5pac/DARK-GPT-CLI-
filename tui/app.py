@@ -11,6 +11,7 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
+from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
@@ -354,6 +355,74 @@ def result_preview(result: Any, lines: int = 4, limit: int = 360) -> str:
     if len(clean) > limit:
         clean = clean[:limit] + "..."
     return clean
+
+
+def arrow_bindings() -> List[Binding]:
+    """Fresh arrow bindings for any keyboard-navigable screen."""
+    return [
+        Binding("up", "nav_up", "Up", show=False),
+        Binding("down", "nav_down", "Down", show=False),
+        Binding("left", "nav_left", "Left", show=False),
+        Binding("right", "nav_right", "Right", show=False),
+    ]
+
+
+class ArrowNavMixin:
+    """Consistent arrow-key navigation for lists and button rows.
+
+    Up/Down move an OptionList highlight (even when a search/custom Input has
+    focus). Left/Right move focus across buttons. Screen-level bindings make
+    this work regardless of which widget currently owns focus.
+    """
+
+    def _nav_lists(self) -> List[OptionList]:
+        try:
+            return [w for w in self.query(OptionList) if w.display and w.options]  # type: ignore[attr-defined]
+        except Exception:
+            return []
+
+    def _nav_buttons(self) -> List[Button]:
+        try:
+            return [w for w in self.query(Button) if w.display]  # type: ignore[attr-defined]
+        except Exception:
+            return []
+
+    def _move_list(self, delta: int) -> None:
+        lists = self._nav_lists()
+        if not lists:
+            raise SkipAction()
+        option_list = lists[0]
+        # Keep text-input focus so users can keep typing/filtering while the
+        # highlight moves. Otherwise focus the list for a visible cursor.
+        if not isinstance(self.focused, Input):  # type: ignore[attr-defined]
+            option_list.focus()
+        if delta < 0:
+            option_list.action_cursor_up()
+        else:
+            option_list.action_cursor_down()
+
+    def _cycle_buttons(self, delta: int) -> None:
+        buttons = self._nav_buttons()
+        if not buttons:
+            raise SkipAction()
+        focused = self.focused  # type: ignore[attr-defined]
+        try:
+            index = buttons.index(focused)
+        except ValueError:
+            index = 0 if delta > 0 else len(buttons) - 1
+        buttons[(index + delta) % len(buttons)].focus()
+
+    def action_nav_up(self) -> None:
+        self._move_list(-1)
+
+    def action_nav_down(self) -> None:
+        self._move_list(1)
+
+    def action_nav_left(self) -> None:
+        self._cycle_buttons(-1)
+
+    def action_nav_right(self) -> None:
+        self._cycle_buttons(1)
 
 
 class ToolCard(CompactCard):
@@ -864,8 +933,8 @@ class PromptArea(TextArea):
 # --------------------------------------------------------------------------- modals
 
 
-class ConfirmScreen(ModalScreen[bool]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+class ConfirmScreen(ArrowNavMixin, ModalScreen[bool]):
+    BINDINGS = arrow_bindings() + [Binding("escape", "cancel", "Cancel")]
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -890,10 +959,10 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class PermissionScreen(ModalScreen[str]):
+class PermissionScreen(ArrowNavMixin, ModalScreen[str]):
     """Three-way confirmation for a potentially unsafe tool call."""
 
-    BINDINGS = [Binding("escape", "deny", "Deny")]
+    BINDINGS = arrow_bindings() + [Binding("escape", "deny", "Deny")]
 
     def __init__(self, message: str, risk: str) -> None:
         super().__init__()
@@ -924,10 +993,29 @@ class PermissionScreen(ModalScreen[str]):
         self.dismiss("deny")
 
 
-class AskQuestionScreen(ModalScreen[Optional[str]]):
+class QuestionInput(Input):
+    """Custom-answer field that keeps arrow navigation on the option list."""
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "down"):
+            option_list = self.screen.query_one("#question-options", OptionList)
+            if event.key == "up":
+                option_list.action_cursor_up()
+            else:
+                option_list.action_cursor_down()
+            event.stop()
+            event.prevent_default()
+
+    async def action_submit(self) -> None:
+        answer = getattr(self.screen, "_answer", None)
+        if callable(answer):
+            answer()
+
+
+class AskQuestionScreen(ArrowNavMixin, ModalScreen[Optional[str]]):
     """Cline-style follow-up question: choose an option or type a custom answer."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = arrow_bindings() + [Binding("escape", "cancel", "Cancel")]
 
     def __init__(self, question: str, options: List[str]) -> None:
         super().__init__()
@@ -938,11 +1026,11 @@ class AskQuestionScreen(ModalScreen[Optional[str]]):
         with Vertical(classes="modal small"):
             yield Static(f"Question\n\n{self.question}", classes="modal-title")
             yield OptionList(id="question-options")
-            yield Input(placeholder="Or type your own answer...", id="question-custom")
+            yield QuestionInput(placeholder="Or type your own answer...", id="question-custom")
             with Horizontal(classes="button-row"):
                 yield Button("Answer", id="question-answer", variant="success")
                 yield Button("Cancel", id="question-cancel")
-            yield Static("^v choose | Enter answer | Esc cancel", classes="modal-help")
+            yield Static("Up/Down choose | Enter answer | Left/Right buttons | Esc cancel", classes="modal-help")
 
     def on_mount(self) -> None:
         options = self.query_one("#question-options", OptionList)
@@ -950,6 +1038,7 @@ class AskQuestionScreen(ModalScreen[Optional[str]]):
             options.add_option(Option(option, id=f"q-opt-{index}"))
         if self.options:
             options.highlighted = 0
+        options.focus()
 
     def _answer(self) -> None:
         custom = self.query_one("#question-custom", Input).value.strip()
@@ -1010,8 +1099,8 @@ class ModelSearchInput(Input):
         self.screen.query_one("#model-list", OptionList).action_select()
 
 
-class ModelPickerScreen(ModalScreen[Optional[Any]]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+class ModelPickerScreen(ArrowNavMixin, ModalScreen[Optional[Any]]):
+    BINDINGS = arrow_bindings() + [Binding("escape", "cancel", "Cancel")]
 
     def __init__(self, current: str, active_provider: Optional[str] = None) -> None:
         super().__init__()
@@ -1025,7 +1114,7 @@ class ModelPickerScreen(ModalScreen[Optional[Any]]):
             yield Static("Select a model | OpenRouter + NVIDIA NIM", classes="modal-title")
             yield ModelSearchInput(placeholder="Search all models...", id="model-search")
             yield OptionList(id="model-list")
-            yield Static("^/v move | Enter select | Esc close | type to filter", classes="modal-help")
+            yield Static("Up/Down move | Enter select | Esc close | type to filter", classes="modal-help")
 
     def on_mount(self) -> None:
         self.run_worker(self._load(), exclusive=False)
@@ -1224,8 +1313,8 @@ class SkillEditorScreen(ModalScreen[bool]):
         self.dismiss(True)
 
 
-class SkillsManagerScreen(ModalScreen[None]):
-    BINDINGS = [
+class SkillsManagerScreen(ArrowNavMixin, ModalScreen[None]):
+    BINDINGS = arrow_bindings() + [
         Binding("escape", "close", "Close"),
         Binding("space", "toggle", "Toggle"),
         Binding("enter", "toggle", "Toggle"),
@@ -1244,6 +1333,7 @@ class SkillsManagerScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self.refresh_list()
+        self.query_one("#skill-list", OptionList).focus()
 
     def refresh_list(self) -> None:
         option_list = self.query_one("#skill-list", OptionList)
@@ -1258,6 +1348,8 @@ class SkillsManagerScreen(ModalScreen[None]):
                 if option.id == current:
                     option_list.highlighted = index
                     break
+        elif option_list.options:
+            option_list.highlighted = 0
         if not rows:
             self._details("No skills yet. Press n to create one.")
         else:
@@ -1327,8 +1419,8 @@ class SkillsManagerScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class ToolsManagerScreen(ModalScreen[None]):
-    BINDINGS = [
+class ToolsManagerScreen(ArrowNavMixin, ModalScreen[None]):
+    BINDINGS = arrow_bindings() + [
         Binding("escape", "close", "Close"),
         Binding("space", "toggle", "Toggle"),
         Binding("enter", "toggle", "Toggle"),
@@ -1345,6 +1437,7 @@ class ToolsManagerScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self.refresh_list()
+        self.query_one("#tool-list", OptionList).focus()
 
     def _tools(self) -> List[Dict[str, Any]]:
         registry = ToolRegistry(self.app.mcp, disabled=set(), model=str(getattr(self.app, "model", "") or ""))
@@ -1384,6 +1477,8 @@ class ToolsManagerScreen(ModalScreen[None]):
                 if option.id == current:
                     option_list.highlighted = index
                     break
+        elif option_list.options:
+            option_list.highlighted = 0
         if not self._tools():
             self.query_one("#tool-details", Static).update(Text("No tools available."))
         else:
@@ -1436,8 +1531,8 @@ class ToolsManagerScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class MCPManagerScreen(ModalScreen[None]):
-    BINDINGS = [
+class MCPManagerScreen(ArrowNavMixin, ModalScreen[None]):
+    BINDINGS = arrow_bindings() + [
         Binding("escape", "close", "Close"),
         Binding("c", "toggle", "Connect/Disconnect"),
         Binding("r", "restart", "Restart"),
@@ -1459,6 +1554,7 @@ class MCPManagerScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self.refresh_list()
+        self.query_one("#mcp-list", OptionList).focus()
         self._timer = self.set_interval(0.8, self.refresh_list)  # strong ref: timers are weak-held
 
     def refresh_list(self) -> None:
@@ -1478,6 +1574,8 @@ class MCPManagerScreen(ModalScreen[None]):
                 if option.id == current:
                     option_list.highlighted = index
                     break
+        elif option_list.options:
+            option_list.highlighted = 0
         if not rows:
             self._details("No MCP servers configured. Press a to add one.")
         else:
@@ -1610,12 +1708,12 @@ class MCPManagerScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class SessionPickerScreen(ModalScreen[Optional[str]]):
+class SessionPickerScreen(ArrowNavMixin, ModalScreen[Optional[str]]):
     """OpenCode-style session picker: recent chats from the DB and checkpoints."""
 
     MAX_CHATS = 40
 
-    BINDINGS = [
+    BINDINGS = arrow_bindings() + [
         Binding("escape", "cancel", "Cancel"),
         Binding("d", "delete", "Delete chat", show=True),
     ]
@@ -1715,6 +1813,7 @@ class SessionPickerScreen(ModalScreen[Optional[str]]):
             option_list.highlighted = 0
         else:
             option_list.add_options([Option("No saved sessions yet", id="none")])
+        option_list.focus()
 
     @on(OptionList.OptionSelected, "#session-list")
     def _selected(self, event: OptionList.OptionSelected) -> None:
@@ -1804,6 +1903,10 @@ class DarkGPTApp(App):
         Binding("ctrl+c", "handle_ctrl_c", "Copy/Stop/Quit", show=False),
         Binding("escape", "escape", "Close/Stop", show=False),
         Binding("ctrl+n", "new_chat", "New", show=False),
+        # Palette navigation must win even if focus moved off the prompt.
+        # SkipAction lets normal text-cursor movement work when no palette is open.
+        Binding("up", "palette_up", "Palette up", show=False, priority=True),
+        Binding("down", "palette_down", "Palette down", show=False, priority=True),
     ]
 
     mode = reactive("Build")
@@ -2175,6 +2278,16 @@ class DarkGPTApp(App):
             self.query_one("#palette", OptionList).display = False
         except Exception:
             pass
+
+    def action_palette_up(self) -> None:
+        if isinstance(self.screen, ModalScreen) or not self.palette_visible:
+            raise SkipAction()
+        self.palette_move(-1)
+
+    def action_palette_down(self) -> None:
+        if isinstance(self.screen, ModalScreen) or not self.palette_visible:
+            raise SkipAction()
+        self.palette_move(1)
 
     def update_palette(self, text: str) -> None:
         if not text.startswith("/") or "\n" in text:
@@ -2675,6 +2788,7 @@ class DarkGPTApp(App):
         await self.handle_ctrl_c()
 
     def open_model(self) -> None:
+        self.hide_palette()
         self.push_screen(
             ModelPickerScreen(self.model, active_provider=current_provider()),
             self._model_picked,
@@ -2755,15 +2869,19 @@ class DarkGPTApp(App):
         self._system_note(note)
 
     def open_mcp(self) -> None:
+        self.hide_palette()
         self.push_screen(MCPManagerScreen(), lambda _: self._after_manager())
 
     def open_skills(self) -> None:
+        self.hide_palette()
         self.push_screen(SkillsManagerScreen(), lambda _: self._after_manager())
 
     def open_tools(self) -> None:
+        self.hide_palette()
         self.push_screen(ToolsManagerScreen(), lambda _: self._after_manager())
 
     def open_sessions(self) -> None:
+        self.hide_palette()
         self.push_screen(SessionPickerScreen(current_db_id=self.conv_id), self._session_picked)
 
     def _on_session_deleted(self, conv_id: int) -> None:

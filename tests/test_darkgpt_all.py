@@ -374,6 +374,60 @@ async def check_session_picker_delete():
             session_util.ROOT = original_root
 
 
+async def check_arrow_navigation():
+    app = A.DarkGPTApp()
+    async with app.run_test(size=(140, 48)) as pilot:
+        await pilot.pause(); await pilot.pause()
+
+        # Command palette arrows work even though the binding is app-level.
+        area = app.query_one("#prompt-input", A.PromptArea)
+        area.load_text("/")
+        await pilot.pause()
+        palette = app.query_one("#palette", A.OptionList)
+        assert palette.display and palette.highlighted == 0
+        await pilot.press("down"); await pilot.pause()
+        assert palette.highlighted == 1, palette.highlighted
+        await pilot.press("up"); await pilot.pause()
+        assert palette.highlighted == 0, palette.highlighted
+        ok("command palette Up/Down navigation")
+
+        # Manager lists start on a real row and arrow keys move the highlight.
+        app.hide_palette()
+        await pilot.pause()
+        await pilot.press("ctrl+g"); await pilot.pause()
+        skills = app.screen.query_one("#skill-list", A.OptionList)
+        assert skills.highlighted == 0, skills.highlighted
+        await pilot.press("down"); await pilot.pause()
+        assert skills.highlighted == 1, skills.highlighted
+        await pilot.press("up"); await pilot.pause()
+        assert skills.highlighted == 0, skills.highlighted
+        ok("skills manager arrow navigation starts highlighted")
+        await pilot.press("escape"); await pilot.pause()
+
+        # Left/Right move focus across confirmation buttons.
+        app.push_screen(A.ConfirmScreen("DELETE?"), lambda _: None)
+        await pilot.pause()
+        assert getattr(app.focused, "id", "") == "confirm-no", getattr(app.focused, "id", "")
+        await pilot.press("right"); await pilot.pause()
+        assert getattr(app.focused, "id", "") == "confirm-yes", getattr(app.focused, "id", "")
+        await pilot.press("left"); await pilot.pause()
+        assert getattr(app.focused, "id", "") == "confirm-no", getattr(app.focused, "id", "")
+        ok("confirmation buttons navigate with Left/Right")
+        await pilot.press("escape"); await pilot.pause()
+
+        # Arrows from a custom-answer field still move the option highlight.
+        app.push_screen(A.AskQuestionScreen("pick", ["one", "two", "three"]), lambda _: None)
+        await pilot.pause()
+        custom = app.screen.query_one("#question-custom", A.Input)
+        custom.focus(); await pilot.pause()
+        options = app.screen.query_one("#question-options", A.OptionList)
+        await pilot.press("down"); await pilot.pause()
+        assert options.highlighted == 1, options.highlighted
+        assert app.focused is custom, type(app.focused).__name__
+        ok("follow-up question arrows work while typing custom answer")
+        await pilot.press("escape"); await pilot.pause()
+
+
 async def main():
     check_network_resilience()
     check_self_learning()
@@ -385,6 +439,7 @@ async def main():
     check_browser()
     await check_tui()
     await check_session_picker_delete()
+    await check_arrow_navigation()
     print(f"\nALL DARKGPT CHECKS PASSED ({len(PASS)} sections)")
 
 asyncio.run(main())
