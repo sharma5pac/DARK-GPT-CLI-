@@ -1613,50 +1613,101 @@ class MCPManagerScreen(ModalScreen[None]):
 class SessionPickerScreen(ModalScreen[Optional[str]]):
     """OpenCode-style session picker: recent chats from the DB and checkpoints."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    MAX_CHATS = 40
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("d", "delete", "Delete chat", show=True),
+    ]
+
+    def __init__(self, current_db_id: Optional[int] = None) -> None:
+        super().__init__()
+        self.current_db_id = current_db_id
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal wide"):
             yield Static("Recent sessions", classes="modal-title")
+            yield Static("", id="session-summary", classes="modal-help")
             yield OptionList(id="session-list")
+            with Horizontal(classes="button-row"):
+                yield Button("Delete chat", id="session-delete", classes="-error")
             yield Static(
-                "Enter resume | Esc close | sessions are kept on disk, nothing is deleted",
+                "Enter resume | Up/Down select | D or Delete chat removes the selected history | "
+                "Esc close | evidence/target files are never removed",
                 classes="modal-help",
             )
 
     def on_mount(self) -> None:
         self._populate()
 
+    def _highlighted_id(self) -> str:
+        option_list = self.query_one("#session-list", OptionList)
+        try:
+            index = option_list.highlighted
+            if index is None:
+                return ""
+            return str(option_list.get_option_at_index(index).id or "")
+        except Exception:
+            return ""
+
     def _populate(self) -> None:
+        # Old rows may predate title derivation; rename them from their first
+        # user request before building the list.
+        try:
+            db.refresh_titles()
+        except Exception:
+            pass
+
         options: List[Option] = []
+        all_chats = db.list_conversations()
+        chats = all_chats[: self.MAX_CHATS]
         # Database conversations (full text history with tools).
-        try:
-            for conv in db.list_conversations():
-                title = str(conv.get("title") or "(untitled)").replace("\n", " ")[:64]
-                updated = str(conv.get("updated_at") or "")[:16]
-                model = str(conv.get("model") or "").split("/")[-1]
-                options.append(
-                    Option(
-                        f"chat  {title:<64}  {updated}  {model}",
-                        id=f"db:{conv['id']}",
-                    )
+        for conv in chats:
+            title = ascii_safe(str(conv.get("title") or "(untitled)").replace("\n", " "))[:64]
+            updated = str(conv.get("updated_at") or "")[:16]
+            model = ascii_safe(str(conv.get("model") or "").split("/")[-1])
+            current = " (current)" if conv.get("id") == self.current_db_id else ""
+            options.append(
+                Option(
+                    f"chat  {title:<64}  {updated}  {model}{current}",
+                    id=f"db:{conv['id']}",
                 )
+            )
+
+        # Checkpoint sessions (restored text-only). Name these by the first
+        # user request too, not the last one.
+        sessions = session_util.list_sessions(os.getcwd(), 12)
+        for sess in sessions:
+            sid = str(sess.get("id") or "")
+            title = ""
+            try:
+                entry = session_util.load(sid)
+                for turn in entry.get("turns") or []:
+                    if str(turn.get("role") or "") == "user" and str(turn.get("content") or "").strip():
+                        title = str(turn["content"])
+                        break
+            except Exception:
+                pass
+            if not title:
+                title = str(sess.get("last_user") or sess.get("label") or "(empty)")
+            title = ascii_safe(title.replace("\n", " "))[:52]
+            turns = int(sess.get("turns") or 0)
+            options.append(
+                Option(
+                    f"save  {title:<52}  {turns} turns  {sid[:12]}",
+                    id=f"cp:{sid}",
+                )
+            )
+
+        summary = (
+            f"showing {len(chats)}/{len(all_chats)} chats + {len(sessions)} checkpoints | "
+            "titles are the first user request"
+        )
+        try:
+            self.query_one("#session-summary", Static).update(summary)
         except Exception:
             pass
-        # Checkpoint sessions (restored text-only).
-        try:
-            for sess in session_util.list_sessions(os.getcwd(), 12):
-                title = str(sess.get("last_user") or "(empty)").replace("\n", " ")[:52]
-                sid = str(sess.get("id") or "")
-                turns = int(sess.get("turns") or 0)
-                options.append(
-                    Option(
-                        f"save  {title:<52}  {turns} turns  {sid[:12]}",
-                        id=f"cp:{sid}",
-                    )
-                )
-        except Exception:
-            pass
+
         option_list = self.query_one("#session-list", OptionList)
         option_list.clear_options()
         if options:
@@ -1669,6 +1720,59 @@ class SessionPickerScreen(ModalScreen[Optional[str]]):
     def _selected(self, event: OptionList.OptionSelected) -> None:
         sel = event.option.id or ""
         self.dismiss(None if sel == "none" else sel)
+
+    @on(Button.Pressed, "#session-delete")
+    def _delete_button(self) -> None:
+        self.action_delete()
+
+    def action_delete(self) -> None:
+        sel = self._highlighted_id()
+        if not sel or sel == "none":
+            self.notify("Select a chat or checkpoint first", timeout=2.5)
+            return
+        kind, _ident = (sel.split(":", 1) + [""])[:2]
+        label = "chat" if kind == "db" else "checkpoint" if kind == "cp" else ""
+        if not label:
+            self.notify("That entry cannot be deleted", timeout=2.5)
+            return
+        message = (
+            f"Delete the selected {label}? This removes only its saved chat history. "
+            "Evidence, target data and reports are never removed."
+        )
+        self.app.push_screen(
+            ConfirmScreen(message),
+            lambda confirmed: (
+                self.run_worker(
+                    self._delete_after_confirm(sel, bool(confirmed)), exclusive=True
+                )
+                if confirmed
+                else None
+            ),
+        )
+
+    async def _delete_after_confirm(self, selector: str, confirmed: bool = True) -> None:
+        if not confirmed:
+            return
+        try:
+            kind, ident = selector.split(":", 1)
+            if kind == "db":
+                conv_id = int(ident)
+                await asyncio.to_thread(db.delete_conversation, conv_id)
+                try:
+                    self.app._on_session_deleted(conv_id)
+                except Exception:
+                    pass
+                note = f"Deleted chat #{conv_id}"
+            elif kind == "cp":
+                removed = await asyncio.to_thread(session_util.delete_session, ident)
+                note = f"Deleted checkpoint {ident[:12]}" if removed else "Checkpoint already gone"
+            else:
+                return
+        except Exception as exc:
+            self.notify(f"Delete failed: {type(exc).__name__}: {exc}", severity="error")
+            return
+        self._populate()
+        self.notify(note, timeout=2.5)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1780,6 +1884,12 @@ class DarkGPTApp(App):
 
     async def on_mount(self) -> None:
         db.init_db()
+        # Older chats may still say "New chat"; name every thread from its
+        # first real user request so the session picker stays useful.
+        try:
+            db.refresh_titles()
+        except Exception:
+            pass
         ensure_default_config()
         config = appconfig.load_config()
         self.model = config.get("model") or DEFAULT_MODEL
@@ -2654,7 +2764,24 @@ class DarkGPTApp(App):
         self.push_screen(ToolsManagerScreen(), lambda _: self._after_manager())
 
     def open_sessions(self) -> None:
-        self.push_screen(SessionPickerScreen(), self._session_picked)
+        self.push_screen(SessionPickerScreen(current_db_id=self.conv_id), self._session_picked)
+
+    def _on_session_deleted(self, conv_id: int) -> None:
+        """Drop an actively open chat when it is deleted from the picker."""
+        if self.conv_id != conv_id:
+            return
+        self.conv_id = None
+        self.messages = []
+        self.last_answer = ""
+        self.last_prompt = ""
+        self.run_worker(self._clear_deleted_conversation(), exclusive=False)
+
+    async def _clear_deleted_conversation(self) -> None:
+        conv = self.query_one("#conversation", VerticalScroll)
+        await conv.remove_children()
+        self._system_note("Deleted the active chat | new prompts start a fresh history")
+        self.refresh_status()
+        self.update_context()
 
     def _session_picked(self, selector: Optional[str]) -> None:
         if not selector:
@@ -3401,7 +3528,7 @@ class DarkGPTApp(App):
             await conv.mount(ChatMessage("user", text, ts=time.time()))
             self.messages.append({"role": "user", "content": text})
             if not self.conv_id:
-                self.conv_id = db.create_conversation(text[:44], self.model)
+                self.conv_id = db.create_conversation(db.derive_title(text), self.model)
             db.add_message(self.conv_id, "user", text)
             conv.scroll_end(animate=False)
 

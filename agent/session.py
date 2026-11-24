@@ -134,6 +134,22 @@ def load(session_id: str) -> Dict[str, Any]:
         return {}
 
 
+def delete_session(session_id: str) -> bool:
+    """Remove one checkpoint file after explicit user confirmation.
+
+    This only touches the checkpoint JSON under ~/.config/darkgpt/sessions; it
+    never removes evidence, target data, or reports.
+    """
+    try:
+        path = _path(session_id)
+    except ValueError:
+        return False
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def resolve(selector: str = "", cwd: str = "") -> Dict[str, Any]:
     """Resolve 'latest', an id, or an id prefix to a session entry."""
     selector = (selector or "").strip()

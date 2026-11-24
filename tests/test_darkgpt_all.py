@@ -147,6 +147,30 @@ def check_session_and_skills():
     ok(f"skills registry ({len(reg.all())} bundles)")
 
 
+def check_history_titles_and_delete():
+    from utils import history as H
+
+    original_db = H.DB_PATH
+    with tempfile.TemporaryDirectory() as d:
+        H.DB_PATH = os.path.join(d, "history-test.db")
+        try:
+            H.init_db()
+            cid = H.create_conversation("New chat", "test-model")
+            H.add_message(cid, "user", "first request: enumerate subdomains")
+            H.add_message(cid, "assistant", "working on it")
+            assert H.refresh_titles() == 1
+            conv = H.get_conversation(cid)
+            assert conv and conv["title"] == "first request: enumerate subdomains", conv
+            assert H.refresh_titles() == 0
+            ok("recent chats renamed from first user request")
+
+            H.delete_conversation(cid)
+            assert H.get_conversation(cid) is None and not H.get_messages(cid)
+            ok("chat delete removes only its history rows")
+        finally:
+            H.DB_PATH = original_db
+
+
 def check_browser():
     result = B.run([
         {"action": "navigate", "url": "data:text/html,<h1 id='x'>ALL-SUITE-OK</h1>"},
@@ -306,6 +330,50 @@ async def check_tui():
         ok("guardrails configured (repeat/tools/steps/verify/review/subagents)")
 
 
+async def check_session_picker_delete():
+    from utils import history as H
+
+    original_db = H.DB_PATH
+    original_root = session_util.ROOT
+    with tempfile.TemporaryDirectory() as d:
+        H.DB_PATH = os.path.join(d, "picker-test.db")
+        session_util.ROOT = Path(d) / "sessions"
+        session_util.ROOT.mkdir(parents=True, exist_ok=True)
+        try:
+            H.init_db()
+            cid = H.create_conversation("New chat", "test-model")
+            H.add_message(cid, "user", "first request: test the login flow")
+            H.refresh_titles()
+
+            app = A.DarkGPTApp()
+            async with app.run_test(size=(140, 48)) as pilot:
+                await pilot.pause(); await pilot.pause()
+                app.open_sessions()
+                await pilot.pause()
+                picker = app.screen
+                assert isinstance(picker, A.SessionPickerScreen), type(app.screen)
+                option_list = picker.query_one("#session-list", A.OptionList)
+                assert option_list.options
+                assert "first request: test the login flow" in str(option_list.options[0].prompt)
+                assert str(option_list.options[0].id) == f"db:{cid}"
+                ok("session picker lists chats by first request")
+
+                await pilot.press("d"); await pilot.pause()
+                assert isinstance(app.screen, A.ConfirmScreen), type(app.screen)
+                await pilot.click("#confirm-yes")
+                for _ in range(30):
+                    await pilot.pause()
+                    if H.get_conversation(cid) is None:
+                        break
+                assert H.get_conversation(cid) is None, "delete button did not remove chat"
+                assert isinstance(app.screen, A.SessionPickerScreen), type(app.screen)
+                ok("session picker Delete chat button works with confirmation")
+                await pilot.press("escape"); await pilot.pause()
+        finally:
+            H.DB_PATH = original_db
+            session_util.ROOT = original_root
+
+
 async def main():
     check_network_resilience()
     check_self_learning()
@@ -313,8 +381,10 @@ async def main():
     check_config_and_providers()
     check_cline_tools()
     check_session_and_skills()
+    check_history_titles_and_delete()
     check_browser()
     await check_tui()
+    await check_session_picker_delete()
     print(f"\nALL DARKGPT CHECKS PASSED ({len(PASS)} sections)")
 
 asyncio.run(main())

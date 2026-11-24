@@ -127,6 +127,35 @@ def derive_title(text: str, limit: int = 44) -> str:
     return clean[:limit].rstrip() + "..."
 
 
+def refresh_titles(limit: int = 64) -> int:
+    """Name every conversation by its first user request.
+
+    Old rows may carry generic titles. This only rewrites ``conversations.title``
+    in the new schema; the legacy ``chat_history`` table is never touched.
+    Returns the number of rows updated.
+    """
+    changed = 0
+    for conv in list_conversations():
+        try:
+            first = next(
+                (
+                    m.get("content", "")
+                    for m in get_messages(conv["id"])
+                    if m.get("role") == "user" and str(m.get("content") or "").strip()
+                ),
+                None,
+            )
+        except Exception:
+            first = None
+        if not first:
+            continue
+        title = derive_title(first, limit)
+        if str(conv.get("title") or "") != title:
+            set_title(conv["id"], title)
+            changed += 1
+    return changed
+
+
 # --------------------------------------------------------------------------- write
 
 def create_conversation(title: str = "New chat", model: Optional[str] = None) -> int:
