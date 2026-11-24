@@ -188,7 +188,7 @@ class ThoughtBlock(Static):
 
     def __init__(self, text: str = "", seconds: float = 0.0) -> None:
         super().__init__()
-        self.thought = text
+        self.thought = ascii_safe(text)
         self.seconds = seconds
         self.expanded = False
         self.summary_prefix = "Thought"
@@ -198,19 +198,19 @@ class ThoughtBlock(Static):
         self.render_block()
 
     def set_thought(self, text: str, seconds: float) -> None:
-        self.thought = text
+        self.thought = ascii_safe(text)
         self.seconds = seconds
         self.render_block()
 
     def render_block(self) -> None:
-        summary = (self.thought.strip().splitlines() or [self.summary_prefix.lower()])[0][:90]
+        summary = ascii_safe((self.thought.strip().splitlines() or [self.summary_prefix.lower()])[0])[:90]
         suffix = f" | {self.seconds:.1f}s" if self.seconds else ""
         head = f"+ {self.summary_prefix}: {summary}{suffix}"
         style = "#d4a359" if self.style_name != "plan" else "#8ab4f8"
         if self.expanded and self.thought.strip():
-            self.update(Text(head + "\n\n" + self.thought.strip(), style=style))
+            self.update(Text(ascii_safe(head + "\n\n" + self.thought.strip()), style=style))
         else:
-            self.update(Text(head, style=style))
+            self.update(Text(ascii_safe(head), style=style))
 
     def action_toggle(self) -> None:
         self.expanded = not self.expanded
@@ -218,6 +218,28 @@ class ThoughtBlock(Static):
 
     def on_click(self, event=None) -> None:
         self.action_toggle()
+
+
+_MOJIBAKE_REPLACEMENTS = {
+    "\u2014": "-", "\u2013": "-", "\u2192": "->", "\u2190": "<-", "\u2026": "...",
+    "\u00b7": "|", "\u2713": "[ok]", "\u2717": "[x]", "\u25cf": "*", "\u25cb": "o",
+    "\u25c7": "<", "\u25c6": ">", "\u2699": "[*]", "\u2191": "^", "\u2193": "v",
+    "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'", "\u2500": "-",
+    "\u2022": "-", "\u00b0": " deg ",
+}
+
+
+def ascii_safe(text: Any) -> str:
+    """Normalize display text to terminal-safe ASCII to prevent mojibake."""
+    s = str(text or "")
+    for k, v in _MOJIBAKE_REPLACEMENTS.items():
+        s = s.replace(k, v)
+    try:
+        s = s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    # Final guard: replace any remaining non-ascii with '?' to avoid terminal corruption.
+    return "".join(ch if ord(ch) < 128 else "?" for ch in s)
 
 
 def clean_result(result: Any) -> str:
@@ -228,16 +250,16 @@ def clean_result(result: Any) -> str:
     try:
         parsed = json.loads(text)
     except Exception:
-        return text
+        return ascii_safe(text)
     if isinstance(parsed, dict):
         for key in ("output", "findings", "result", "stdout", "text", "message", "error", "hint"):
             value = parsed.get(key)
             if value not in (None, "", [], {}):
-                return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
-        return json.dumps(parsed, ensure_ascii=False, indent=2)
+                return ascii_safe(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2))
+        return ascii_safe(json.dumps(parsed, ensure_ascii=False, indent=2))
     if isinstance(parsed, list):
-        return "\n".join(str(item) for item in parsed[:100])
-    return text
+        return ascii_safe("\n".join(str(item) for item in parsed[:100]))
+    return ascii_safe(text)
 
 
 def result_preview(result: Any, lines: int = 4, limit: int = 360) -> str:
@@ -484,11 +506,11 @@ class SectionLabel(Static):
 
     def __init__(self, title: str, style: str) -> None:
         super().__init__()
-        self.section_title = title
+        self.section_title = ascii_safe(title)
         self.section_style = style
 
     def on_mount(self) -> None:
-        self.update(Text(f"-- {self.section_title} --", style=self.section_style))
+        self.update(Text(ascii_safe(f"-- {self.section_title} --"), style=self.section_style))
 
 
 class FindingCard(Static):
@@ -613,7 +635,7 @@ class ChatMessage(Vertical):
     def __init__(self, role: str, content: str = "") -> None:
         super().__init__()
         self.role = role
-        self.raw_content = content
+        self.raw_content = ascii_safe(content)
         self._md: Markdown | None = None
         self._user_text: Static | None = None
 
@@ -621,7 +643,7 @@ class ChatMessage(Vertical):
         self.render_msg()
 
     def set_content(self, content: str) -> None:
-        self.raw_content = content
+        self.raw_content = ascii_safe(content)
         self.render_msg()
 
     def render_msg(self) -> None:
@@ -636,25 +658,25 @@ class ChatMessage(Vertical):
                 self._user_text.ALLOW_SELECT = True
                 self.mount(self._user_text)
             else:
-                self._user_text.update(Text(self.raw_content, style="#f0f0f0"))
+                self._user_text.update(Text(ascii_safe(self.raw_content), style="#f0f0f0"))
         else:
             self.remove_class("msg-user")
             self.add_class("msg-assistant")
             if self._user_text is not None:
                 self._user_text.remove()
                 self._user_text = None
-            content = self.raw_content or " "
+            content = ascii_safe(self.raw_content or " ")
             if self._md is None:
-                self._md = Markdown(content)
+                self._md = Markdown(ascii_safe(content))
                 self._md.ALLOW_SELECT = True
                 self.mount(self._md)
             else:
                 try:
-                    self.run_worker(self._md.update(content), exclusive=False)
+                    self.run_worker(self._md.update(ascii_safe(content)), exclusive=False)
                 except Exception:
                     try:
                         import asyncio
-                        asyncio.create_task(self._md.update(content))
+                        asyncio.create_task(self._md.update(ascii_safe(content)))
                     except Exception:
                         pass
 
@@ -1861,7 +1883,7 @@ class DarkGPTApp(App):
 
     def _system_note(self, text: str) -> None:
         conv = self.query_one("#conversation", VerticalScroll)
-        note = Static(Text(text, style="#888888"))
+        note = Static(Text(ascii_safe(text), style="#888888"))
         note.add_class("system-note")
         conv.mount(note)
         conv.scroll_end(animate=False)
@@ -3323,7 +3345,7 @@ class DarkGPTApp(App):
                     else:
                         thought.set_thought(event.get("text", ""), float(event.get("duration") or 0.0))
                 elif event_type == "plan":
-                    plan_text = str(event.get("text") or "").strip()
+                    plan_text = ascii_safe(str(event.get("text") or "")).strip()
                     if plan_text:
                         if plan_box is None:
                             plan_box = ThoughtBlock(plan_text, 0.0)
@@ -3407,7 +3429,7 @@ class DarkGPTApp(App):
                         try:
                             data = json.loads(raw_result)
                             if isinstance(data, dict):
-                                hint = str(data.get("hint") or data.get("error") or data.get("message") or "")
+                                hint = ascii_safe(str(data.get("hint") or data.get("error") or data.get("message") or ""))
                         except Exception:
                             pass
                         if findings_header is None:
@@ -3446,11 +3468,11 @@ class DarkGPTApp(App):
                     content_parts.append(event.get("text", ""))
                     now = time.perf_counter()
                     if (now - last_render) >= render_every:
-                        assistant.set_content("".join(content_parts))
+                        assistant.set_content(ascii_safe("".join(content_parts)))
                         last_render = now
                         conv.scroll_end(animate=False)
                 elif event_type == "notice":
-                    self._system_note(str(event.get("message")))
+                    self._system_note(ascii_safe(str(event.get("message"))))
                 elif event_type == "error":
                     failed = True
                     self._last_failed = text
@@ -3471,7 +3493,7 @@ class DarkGPTApp(App):
                     # recovery options. Repeating them here produced the noisy
                     # double "HTTP 429 ... / Recover with ..." lines.
                     if not card:
-                        self._system_note(f"Error: {event.get('message')}")
+                        self._system_note(ascii_safe(f"Error: {event.get('message')}"))
                         self._system_note("Run /retry to try again.")
         except asyncio.CancelledError:
             timeline.finish_all(ok=False)
@@ -3491,7 +3513,7 @@ class DarkGPTApp(App):
         # Flush any throttled streamed content.
         final_text = "".join(content_parts)
         if final_text:
-            assistant.set_content(final_text)
+            assistant.set_content(ascii_safe(final_text))
         answer = final_text.strip()
         if answer:
             self.last_answer = answer
