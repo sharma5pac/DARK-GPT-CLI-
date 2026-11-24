@@ -113,10 +113,62 @@ PHASE_LABELS = {
 # --------------------------------------------------------------------------- widgets
 
 
-class PhaseTimeline(Static):
-    ALLOW_SELECT = True
+class CompactCard(Static):
+    """Claude-Code-style one-line activity entry, expandable with Enter/click.
 
-    """Live phase timeline driven by perf_counter events from the agent."""
+    Interim work (thoughts, plans, tool calls, findings, diffs, subagents) stays
+    out of the way until asked for. The final assistant answer is the only
+    large block in the conversation.
+    """
+
+    ALLOW_SELECT = True
+    can_focus = True
+    BINDINGS = [
+        Binding("enter", "toggle", "Expand/collapse", show=False),
+        Binding("space", "toggle", "Expand/collapse", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expanded = False
+        self.add_class("compact-card")
+
+    def accent(self) -> str:
+        return "#8a8a8a"
+
+    def head_text(self) -> Text:
+        raise NotImplementedError
+
+    def body_text(self) -> str:
+        return ""
+
+    def refresh_view(self) -> None:
+        text = Text()
+        text.append("- " if self.expanded else ". ", style=self.accent())
+        try:
+            text.append_text(self.head_text())
+        except Exception:
+            text.append(ascii_safe(str(self.head_text())), style=self.accent())
+        body = ascii_safe(self.body_text()).strip("\n")
+        if self.expanded:
+            if body:
+                for line in body.splitlines()[:240]:
+                    text.append("\n  " + line[:400], style="#9a9a9a")
+            text.append("\n  Enter/click to collapse", style="#4f4f4f")
+        elif body:
+            text.append("  ...", style="#4f4f4f")
+        self.update(text)
+
+    def action_toggle(self) -> None:
+        self.expanded = not self.expanded
+        self.refresh_view()
+
+    def on_click(self, event=None) -> None:
+        self.action_toggle()
+
+
+class PhaseTimeline(CompactCard):
+    """Compact activity summary; Enter/click expands the full phase timeline."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -166,66 +218,87 @@ class PhaseTimeline(Static):
         if any(step["status"] == "active" for step in self.steps):
             self.render_timeline()
 
-    def render_timeline(self) -> None:
+    def accent(self) -> str:
+        return "#8b949e"
+
+    def head_text(self) -> Text:
         total = time.perf_counter() - self._started
+        last = self.steps[-1] if self.steps else None
+        if last is None:
+            detail = "waiting"
+        else:
+            detail = last["label"]
+            if last["status"] == "active":
+                detail += f" ({time.perf_counter() - last['started']:.1f}s)"
+        return Text(
+            f"activity: {len(self.steps)} steps | {total:.1f}s | {ascii_safe(detail)[:60]}",
+            style=self.accent(),
+        )
+
+    def body_text(self) -> str:
         started_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._started_wall))
-        text = Text()
-        text.append(f"Activity  {started_stamp}  |  {total:.1f}s\n", style="bold #8b949e")
+        lines = [f"Activity  {started_stamp}"]
         for step in self.steps[-12:]:
             elapsed = step["elapsed"] if step["status"] != "active" else (time.perf_counter() - step["started"])
             stamp_t = step.get("ended_wall") or step.get("started_wall") or self._started_wall
             stamp = time.strftime("%H:%M:%S", time.localtime(float(stamp_t)))
             if step["status"] == "done":
-                mark, style = "[ok]", "#6abf69"
+                mark = "[ok]"
             elif step["status"] == "error":
-                mark, style = "[x]", "#e06c75"
+                mark = "[x]"
             else:
-                mark, style = "*", "#d4a359"
-            text.append(f" {mark} ", style=style)
-            text.append(f"[{stamp}] ", style="#777777")
-            text.append(f"{step['label']}", style="#e5e5e5" if step["status"] == "active" else "#c9d1d9")
-            text.append(f"  {elapsed:.1f}s\n", style="#777777")
-        self.update(text)
+                mark = "*"
+            lines.append(f"{mark} [{stamp}] {step['label']}  {elapsed:.1f}s")
+        return "\n".join(lines)
+
+    def render_timeline(self) -> None:
+        self.refresh_view()
 
 
-class ThoughtBlock(Static):
-    ALLOW_SELECT = True
+class ThoughtBlock(CompactCard):
+    """Compact thinking/plan/writing note with an expandable body."""
 
-    can_focus = True
-    BINDINGS = [Binding("enter", "toggle", "Toggle thought", show=False)]
-
-    def __init__(self, text: str = "", seconds: float = 0.0) -> None:
+    def __init__(
+        self,
+        text: str = "",
+        seconds: float = 0.0,
+        prefix: str = "Thought",
+        style_name: str = "thought",
+    ) -> None:
         super().__init__()
         self.thought = ascii_safe(text)
-        self.seconds = seconds
-        self.expanded = False
-        self.summary_prefix = "Thought"
-        self.style_name = "thought"
+        self.seconds = float(seconds or 0.0)
+        self.summary_prefix = prefix
+        self.style_name = style_name
 
     def on_mount(self) -> None:
-        self.render_block()
+        self.refresh_view()
+
+    def accent(self) -> str:
+        if self.style_name == "plan":
+            return "#8ab4f8"
+        if self.style_name == "draft":
+            return "#6abf69"
+        return "#d4a359"
+
+    def head_text(self) -> Text:
+        first = (self.thought.strip().splitlines() or [self.summary_prefix.lower()])[0]
+        suffix = f" | {self.seconds:.1f}s" if self.seconds else ""
+        return Text(
+            f"{self.summary_prefix}: {ascii_safe(first)[:90]}{suffix}",
+            style=self.accent(),
+        )
+
+    def body_text(self) -> str:
+        return self.thought
 
     def set_thought(self, text: str, seconds: float) -> None:
         self.thought = ascii_safe(text)
-        self.seconds = seconds
-        self.render_block()
+        self.seconds = float(seconds or 0.0)
+        self.refresh_view()
 
     def render_block(self) -> None:
-        summary = ascii_safe((self.thought.strip().splitlines() or [self.summary_prefix.lower()])[0])[:90]
-        suffix = f" | {self.seconds:.1f}s" if self.seconds else ""
-        head = f"+ {self.summary_prefix}: {summary}{suffix}"
-        style = "#d4a359" if self.style_name != "plan" else "#8ab4f8"
-        if self.expanded and self.thought.strip():
-            self.update(Text(ascii_safe(head + "\n\n" + self.thought.strip()), style=style))
-        else:
-            self.update(Text(ascii_safe(head), style=style))
-
-    def action_toggle(self) -> None:
-        self.expanded = not self.expanded
-        self.render_block()
-
-    def on_click(self, event=None) -> None:
-        self.action_toggle()
+        self.refresh_view()
 
 
 _MOJIBAKE_REPLACEMENTS = {
@@ -283,11 +356,8 @@ def result_preview(result: Any, lines: int = 4, limit: int = 360) -> str:
     return clean
 
 
-class ToolCard(Static):
-    ALLOW_SELECT = True
-
-    can_focus = True
-    BINDINGS = [Binding("enter", "toggle", "Toggle output", show=False)]
+class ToolCard(CompactCard):
+    """One-line tool call; Enter/click shows the full arguments and output."""
 
     def __init__(self, name: str, display: str, args: Dict[str, Any]) -> None:
         super().__init__()
@@ -299,7 +369,6 @@ class ToolCard(Static):
         self.done = False
         self.ok = True
         self.output_lines: List[str] = []
-        self.expanded = False
 
     def on_mount(self) -> None:
         self.refresh_view()
@@ -332,43 +401,37 @@ class ToolCard(Static):
                 pass
         return self.result
 
-    def refresh_view(self) -> None:
+    def _head(self) -> str:
         if self.tool_name == "shell":
-            head = f"$ {self.args.get('command', '')}"
-        else:
-            arg = json.dumps(self.args, ensure_ascii=False)
-            if len(arg) > 120:
-                arg = arg[:120] + "..."
-            head = f"[*] {self.display_name}({arg})"
-        body = "\n".join(self.output_lines)
-        if not body and self.result:
-            body = self._result_output()
-        lines = body.splitlines()
-        if not self.expanded and len(lines) > 8:
-            body = f"({len(lines)-8} earlier lines)\n" + "\n".join(lines[-8:])
+            return "$ " + str(self.args.get("command", "")).replace("\n", " ")[:110]
+        arg = json.dumps(self.args, ensure_ascii=False, default=str)
+        if len(arg) > 100:
+            arg = arg[:100] + "..."
+        return f"{self.display_name}({arg})"
+
+    def head_text(self) -> Text:
         if not self.done:
-            status, style = "active", "#d4a359"
+            status, style = "running", "#d4a359"
         elif self.ok:
-            status, style = f"[ok] done in {self.duration:.2f}s", "#6abf69"
+            status, style = f"{self.duration:.2f}s", "#6abf69"
         else:
-            status, style = "[x] failed", "#e06c75"
-        text = Text()
-        text.append(head + "\n", style="bold #e5e5e5")
-        if body:
-            text.append(body + "\n", style="#a8a8a8")
-        text.append(status, style=style)
-        self.update(text)
+            status, style = "failed", "#ff6b6b"
+        return Text(f"{self._head()}  [{status}]", style=style)
 
-    def action_toggle(self) -> None:
-        self.expanded = not self.expanded
-        self.refresh_view()
+    def body_text(self) -> str:
+        lines: List[str] = []
+        if self.tool_name != "shell" and self.args:
+            lines.append("args: " + json.dumps(self.args, ensure_ascii=False, indent=2, default=str))
+        output = "\n".join(self.output_lines) or self._result_output()
+        if output.strip():
+            lines.append(output.strip())
+        if self.done:
+            lines.append(f"status: {'ok' if self.ok else 'failed'} ({self.duration:.2f}s)")
+        return "\n".join(lines)
 
-    def on_click(self, event=None) -> None:
-        self.action_toggle()
 
-
-class DiffCard(Static):
-    """Compact unified diff for a file edit, with the undo id visible."""
+class DiffCard(CompactCard):
+    """One-line edit summary; Enter/click shows the diff and undo id."""
 
     def __init__(self, diff: str, undo_id: str = "") -> None:
         super().__init__()
@@ -376,41 +439,81 @@ class DiffCard(Static):
         self.undo_id = undo_id or ""
 
     def on_mount(self) -> None:
-        lines = self.diff.splitlines()
-        body = "\n".join(lines[:60])
-        if len(lines) > 60:
-            body += f"\n... {len(lines) - 60} more lines (/diff for the full diff)"
-        text = Text()
-        text.append("Edit preview\n", style="bold #8ab4f8")
-        text.append(body or "(no diff)", style="#a8a8a8")
+        self.refresh_view()
+
+    def _title(self) -> str:
+        for line in self.diff.splitlines():
+            if line.startswith("+++ b/"):
+                return line[6:].strip()
+            if line.startswith("*** Update File: "):
+                return line[len("*** Update File: "):].strip()
+        return "file"
+
+    def _counts(self) -> tuple[int, int]:
+        adds = 0
+        dels = 0
+        for line in self.diff.splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                adds += 1
+            elif line.startswith("-"):
+                dels += 1
+        return adds, dels
+
+    def head_text(self) -> Text:
+        adds, dels = self._counts()
+        return Text(
+            f"edit: {self._title()}  (+{adds}/-{dels})",
+            style="#8ab4f8",
+        )
+
+    def body_text(self) -> str:
+        body = self.diff or "(no diff)"
         if self.undo_id:
-            text.append(f"\nundo: /undo {self.undo_id}", style="#6a6a6a")
-        self.update(text)
+            body += f"\nundo: /undo {self.undo_id}"
+        return body
 
 
-class SubagentCard(Static):
-    ALLOW_SELECT = True
-
-    """Live status for one isolated subagent worker."""
+class SubagentCard(CompactCard):
+    """One-line subagent status; Enter/click shows its report."""
 
     def __init__(self, role: str, task: str) -> None:
         super().__init__()
         self.agent_role = role  # Widget already owns .task / .role
         self.subtask = task
+        self.ok: Optional[bool] = None
+        self.preview = "working..."
+        self.duration = 0.0
 
     def on_mount(self) -> None:
-        text = Text()
-        text.append(f"< subagent:{self.agent_role}", style="bold #c58af9")
-        text.append("  " + self.subtask[:90], style="#a8a8a8")
-        text.append("\n  working...", style="#6a6a6a")
-        self.update(text)
+        self.refresh_view()
+
+    def accent(self) -> str:
+        if self.ok is None:
+            return "#c58af9"
+        return "#6abf69" if self.ok else "#ff6b6b"
+
+    def head_text(self) -> Text:
+        if self.ok is None:
+            status = "running"
+        else:
+            status = f"{self.duration:.1f}s" if self.ok else "failed"
+        return Text(
+            f"subagent:{self.agent_role}  {self.subtask[:80]}  [{status}]",
+            style=self.accent(),
+        )
+
+    def body_text(self) -> str:
+        return self.preview
 
     def finish(self, ok: bool, preview: str, duration: float) -> None:
-        text = Text()
-        text.append(f"{'>' if ok else '[x]'} subagent:{self.agent_role}", style="bold #c58af9" if ok else "bold #ff6b6b")
-        text.append("  " + self.subtask[:90], style="#a8a8a8")
-        text.append(f"\n  {duration:.1f}s | " + (preview[:180] if ok else f"FAILED: {preview[:160]}"), style="#8ab4f8" if ok else "#ff9d9d")
-        self.update(text)
+        self.ok = bool(ok)
+        self.duration = float(duration or 0.0)
+        self.preview = f"{self.duration:.1f}s | " + (
+            (preview[:600] if ok else f"FAILED: {preview[:600]}")
+        )
+        self.refresh_view()
 
 
 class BackgroundIndicator(Static):
@@ -521,17 +624,8 @@ class SectionLabel(Static):
         self.update(Text(ascii_safe(f"-- {self.section_title} --"), style=self.section_style))
 
 
-class FindingCard(Static):
-    ALLOW_SELECT = True
-
-    """Readable preview of a background MCP/search result.
-
-    Raw output stays out of the chat by default; the model still receives the
-    full result. Click/Enter to expand. ``/bg <n>`` prints the complete result.
-    """
-
-    can_focus = True
-    BINDINGS = [Binding("enter", "toggle", "Expand/collapse", show=False)]
+class FindingCard(CompactCard):
+    """One-line finding; Enter/click shows the result. /bg <n> prints it fully."""
 
     def __init__(
         self,
@@ -549,36 +643,25 @@ class FindingCard(Static):
         self.duration = float(duration or 0.0)
         self.ok = bool(ok)
         self.hint = str(hint or "")
-        self.expanded = False
 
     def on_mount(self) -> None:
         self.refresh_view()
 
-    def refresh_view(self) -> None:
-        body = (
-            self.full_result[:4000] if self.expanded else result_preview(self.full_result)
+    def accent(self) -> str:
+        return "#6abf69" if self.ok else "#ff6b6b"
+
+    def head_text(self) -> Text:
+        status = "ok" if self.ok else "failed"
+        return Text(
+            f"finding: {self.display_name}  [{status} | {self.duration:.2f}s]",
+            style=self.accent(),
         )
+
+    def body_text(self) -> str:
+        body = self.full_result or self.hint or "(no output)"
         if not self.ok:
-            body = "FAILED: " + (body or self.hint[:200] or "unknown error")
-        elif not body:
-            body = "(no output)"
-        text = Text()
-        mark = ">" if self.ok else "[x]"
-        text.append(
-            f"{mark} finding: {self.display_name}",
-            style="bold #6abf69" if self.ok else "bold #ff6b6b",
-        )
-        text.append(f"  | {self.duration:.2f}s", style="#6a6a6a")
-        text.append("\n" + body, style="#a8a8a8" if self.ok else "#ff9d9d")
-        text.append("\n  Enter/click to expand | /bg <n> for full result", style="#5a5a5a")
-        self.update(text)
-
-    def action_toggle(self) -> None:
-        self.expanded = not self.expanded
-        self.refresh_view()
-
-    def on_click(self, event=None) -> None:
-        self.action_toggle()
+            body = "FAILED: " + body
+        return body[:4000] + ("\n(/bg <n> for the full result)" if len(body) > 4000 else "")
 
 
 class ErrorCard(Static):
@@ -3325,24 +3408,52 @@ class DarkGPTApp(App):
         timeline = PhaseTimeline()
         await conv.mount(timeline)
         spinner = ActivitySpinner()
-        assistant = ChatMessage("assistant", "", ts=time.time())
-        await conv.mount(assistant)
-        await conv.mount(spinner, before=assistant)
+        await conv.mount(spinner)
 
         thought: Optional[ThoughtBlock] = None
         thought_parts: List[str] = []
         plan_box: Optional[ThoughtBlock] = None
         content_parts: List[str] = []
+        draft: Optional[ThoughtBlock] = None
+        assistant: Optional[ChatMessage] = None
         cards: List[ToolCard] = []
         sub_cards: Dict[str, SubagentCard] = {}
         self._delegates = []
         bg: Optional[BackgroundIndicator] = None
         bg_names: Dict[str, bool] = {}
-        findings_header: Optional[SectionLabel] = None
-        response_header: Optional[SectionLabel] = None
         self._bg_calls = []
         started = time.perf_counter()
         failed = False
+        finished = False
+
+        async def rotate_draft(label: str = "Note") -> None:
+            """Text before another tool is working context, not the answer."""
+            nonlocal draft, content_parts
+            if draft is not None:
+                draft.summary_prefix = label
+                draft.style_name = "thought"
+                draft.refresh_view()
+                draft = None
+            content_parts = []
+
+        async def ensure_draft() -> None:
+            nonlocal draft
+            if draft is None:
+                draft = ThoughtBlock("", 0.0, prefix="Writing", style_name="draft")
+                await conv.mount(draft, before=spinner)
+
+        async def show_final(text: str) -> None:
+            nonlocal assistant, draft
+            if not text.strip():
+                return
+            if draft is not None:
+                await draft.remove()
+                draft = None
+            if assistant is None:
+                assistant = ChatMessage("assistant", text, ts=time.time())
+                await conv.mount(assistant, before=spinner)
+            else:
+                assistant.set_content(text)
 
         # Auto-compact long sessions to keep TUI/LLM context fast.
         self._auto_compact_messages()
@@ -3392,7 +3503,7 @@ class DarkGPTApp(App):
                     thought_parts.append(event.get("text", ""))
                     if thought is None:
                         thought = ThoughtBlock("", 0.0)
-                        await conv.mount(thought, before=assistant)
+                        await conv.mount(thought, before=spinner)
                     joined = "".join(thought_parts)
                     thought.set_thought(joined, time.perf_counter() - started)
                     # Keep the live indicator reactive while reasoning streams.
@@ -3401,7 +3512,7 @@ class DarkGPTApp(App):
                 elif event_type == "thought":
                     if thought is None:
                         thought = ThoughtBlock(event.get("text", ""), float(event.get("duration") or 0.0))
-                        await conv.mount(thought, before=assistant)
+                        await conv.mount(thought, before=spinner)
                     else:
                         thought.set_thought(event.get("text", ""), float(event.get("duration") or 0.0))
                 elif event_type == "plan":
@@ -3412,15 +3523,17 @@ class DarkGPTApp(App):
                             plan_box.summary_prefix = "Plan"
                             plan_box.style_name = "plan"
                             plan_box.add_class("plan-box")
-                            await conv.mount(plan_box, before=assistant)
+                            await conv.mount(plan_box, before=spinner)
                         else:
                             plan_box.set_thought(plan_text, 0.0)
                 elif event_type in ("permission_denied", "hook_blocked"):
+                    await rotate_draft("Note")
                     self._system_note(
                         ("Permission denied" if event_type == "permission_denied" else "Hook blocked")
                         + f": {event.get('tool') or event.get('event') or event.get('reason') or ''}"
                     )
                 elif event_type == "subagent_start":
+                    await rotate_draft("Note")
                     role = str(event.get("role") or "explore")
                     task = str(event.get("task") or "")
                     key = f"{role}|{task}|{len(sub_cards)}"
@@ -3428,7 +3541,7 @@ class DarkGPTApp(App):
                     sub_cards[key] = sub_card
                     self._active_subagents = len(sub_cards)
                     self._liveness_set("Subagents", f"{role}: {task[:50]}")
-                    await conv.mount(sub_card, before=assistant)
+                    await conv.mount(sub_card, before=spinner)
                 elif event_type == "subagent_end":
                     role = str(event.get("role") or "explore")
                     task = str(event.get("task") or "")
@@ -3453,6 +3566,7 @@ class DarkGPTApp(App):
                         "ok": bool(event.get("ok")),
                     })
                 elif event_type == "tool_start":
+                    await rotate_draft("Working note")
                     name = event.get("name", "tool")
                     display = event.get("display") or name
                     hidden = bool(event.get("background")) and self.mcp_display == "background"
@@ -3460,12 +3574,12 @@ class DarkGPTApp(App):
                     if hidden:
                         if bg is None:
                             bg = BackgroundIndicator()
-                            await conv.mount(bg, before=assistant)
+                            await conv.mount(bg, before=spinner)
                         bg.start(display)
                     else:
                         card = ToolCard(name, display, event.get("args") or {})
                         cards.append(card)
-                        await conv.mount(card, before=assistant)
+                        await conv.mount(card, before=spinner)
                     timeline.start("tool", display)
                     spinner.set_activity("Running tool", display)
                     self._liveness_set("Running tool", display)
@@ -3492,11 +3606,8 @@ class DarkGPTApp(App):
                                 hint = ascii_safe(str(data.get("hint") or data.get("error") or data.get("message") or ""))
                         except Exception:
                             pass
-                        if findings_header is None:
-                            findings_header = SectionLabel("TOOL FINDINGS", "#6abf69")
-                            await conv.mount(findings_header, before=assistant)
                         finding = FindingCard(name, display, raw_result, duration, ok, hint)
-                        await conv.mount(finding, before=assistant)
+                        await conv.mount(finding, before=spinner)
                         self._bg_calls.append({
                             "name": display,
                             "duration": duration,
@@ -3519,27 +3630,32 @@ class DarkGPTApp(App):
                             if diff:
                                 self._last_diff = diff
                                 self._last_undo_id = str(data.get("undo_id") or "")
-                                await conv.mount(DiffCard(diff, self._last_undo_id), before=assistant)
+                                await conv.mount(DiffCard(diff, self._last_undo_id), before=spinner)
                     timeline.end("tool", event.get("duration"), ok=ok, label=event.get("display"))
                 elif event_type == "delta":
-                    if response_header is None and (content_parts or findings_header is not None or thought is not None or plan_box is not None):
-                        response_header = SectionLabel("RESPONSE", "#8ab4f8")
-                        await conv.mount(response_header, before=assistant)
+                    await ensure_draft()
                     content_parts.append(event.get("text", ""))
                     now = time.perf_counter()
                     if (now - last_render) >= render_every:
-                        assistant.set_content(ascii_safe("".join(content_parts)))
+                        if draft is not None:
+                            draft.set_thought("".join(content_parts), time.perf_counter() - started)
                         last_render = now
                         conv.scroll_end(animate=False)
+                elif event_type == "done":
+                    finished = True
+                    await show_final("".join(content_parts))
+                    conv.scroll_end(animate=False)
                 elif event_type == "notice":
+                    await rotate_draft("Note")
                     self._system_note(ascii_safe(str(event.get("message"))))
                 elif event_type == "error":
                     failed = True
+                    await rotate_draft("Note")
                     self._last_failed = text
                     card = event.get("card")
                     elapsed = float(event.get("elapsed") or 0.0)
                     if card:
-                        await conv.mount(ErrorCard(card, elapsed), before=assistant)
+                        await conv.mount(ErrorCard(card, elapsed), before=spinner)
                         retry_after = card.get("retry_after")
                         if retry_after:
                             self._cooldown_until = time.time() + float(retry_after)
@@ -3562,19 +3678,21 @@ class DarkGPTApp(App):
             timeline.finish_all(ok=False)
             self._system_note(f"Error: {exc}")
         finally:
+            if not finished and not failed:
+                await show_final("".join(content_parts))
+            if draft is not None:
+                await rotate_draft("Note")
             spinner.finish(not failed)
             self._liveness_stop(not failed)
-            if findings_header is not None:
-                await conv.mount(SectionLabel("RESPONSE", "#8ab4f8"), before=assistant)
             self.busy = False
             timeline.finish_all(ok=not failed)
             self.refresh_status()
 
-        # Flush any throttled streamed content.
+        # Flush any throttled streamed content into the final response only.
         final_text = "".join(content_parts)
-        if final_text:
+        if assistant is not None and final_text:
             assistant.set_content(ascii_safe(final_text))
-        answer = final_text.strip()
+        answer = final_text.strip() if assistant is not None else ""
         if answer:
             self.last_answer = answer
             self.messages.append({"role": "assistant", "content": answer})

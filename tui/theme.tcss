@@ -215,16 +215,20 @@ Screen {
 
 /* ------------------------------------------------------------------ cards */
 
-ToolCard {
-    border: solid #2e2e2e;
-    background: #1a1a1a;
-    margin: 1 0;
-    padding: 0 1;
+/* Claude-Code style: interim activity is a dim one-line entry. Enter/click
+   expands it; only the final assistant answer gets a large panel. */
+.compact-card {
     height: auto;
+    margin: 0;
+    padding: 0 1;
+    border: none;
+    background: transparent;
+    color: #8a8a8a;
 }
 
-ToolCard:focus {
-    border: solid #e5a93c;
+.compact-card:focus {
+    background: #181818;
+    color: #d4d4d4;
 }
 
 ErrorCard {
@@ -235,103 +239,65 @@ ErrorCard {
     height: auto;
 }
 
-DiffCard {
-    border: solid #2c3d55;
-    background: #121820;
-    margin: 1 0;
-    padding: 0 1;
-    height: auto;
-}
-
 BackgroundIndicator {
     height: auto;
-    margin: 0 0 1 0;
+    margin: 0;
     padding: 0 1;
     color: #8a8a8a;
-    background: #141414;
-    border: round #2a2a2a;
+    background: transparent;
+    border: none;
 }
 
 BackgroundIndicator.running {
     color: #d4a359;
-    border: round #5a4520;
 }
 
 ActivitySpinner {
     height: auto;
     margin: 0 0 1 0;
     padding: 0 1;
-    background: #141414;
-    border: round #2a2a2a;
-}
-
-FindingCard {
-    border: round #2e3d33;
-    background: #141a16;
-    margin: 1 0;
-    padding: 1;
-    height: auto;
-}
-
-FindingCard:focus {
-    border: round #6abf69;
+    background: transparent;
+    border: none;
 }
 
 .system-note {
-    margin: 0 0 1 0;
+    margin: 0;
     padding: 0 1;
     color: #8a8a8a;
 }
 
-ThoughtBlock {
-    margin: 1 0;
-    height: auto;
-    color: #d4a359;
-    padding: 1;
-    border: round #5a4520;
-    background: #17130d;
-}
-
-ThoughtBlock:focus {
-    border: round #e5a93c;
-}
-
 ThoughtBlock.plan-box {
     color: #8ab4f8;
-    border: round #355070;
-    background: #101722;
-}
-
-ThoughtBlock.plan-box:focus {
-    border: round #8ab4f8;
 }
 
 PhaseTimeline {
-    margin: 1 0;
+    margin: 0 0 1 0;
     padding: 0 1;
     height: auto;
-    background: #111111;
-    border: solid #242424;
-    color: #c9d1d9;
+    background: transparent;
+    border: none;
+    color: #8b949e;
 }
 
 .msg-user {
-    margin: 1 0;
-    padding: 1;
-    color: #f0f0f0;
-    border: round #3a3a3a;
-    background: #121212;
+    margin: 1 0 0 0;
+    padding: 0 1;
+    color: #cfcfcf;
+    border: none;
+    background: transparent;
     height: auto;
 }
 
+/* The final answer is the only large, bordered block in the transcript. */
 .msg-assistant {
-    margin: 1 0;
-    padding: 1;
+    margin: 1 0 2 0;
+    padding: 1 2;
+    min-height: 3;
     height: auto;
-    border: round #2f6b4a;
+    border: none;
     border-left: thick #49c17e;
-    background: #12251b;
-    color: #dff3e6;
+    background: #101c15;
+    color: #e2f3e8;
 }
 
 ChatMessage Markdown, .msg-assistant Markdown {
@@ -339,6 +305,10 @@ ChatMessage Markdown, .msg-assistant Markdown {
     margin: 0;
     padding: 0;
     height: auto;
+}
+
+.msg-assistant Markdown {
+    padding: 0 1;
 }
 
 ChatMessage {
@@ -486,10 +456,3 @@ ChatMessage Static {
     color: #e06c75;
 }
 
-SubagentCard {
-    border: solid #4d3a66;
-    background: #16121e;
-    margin: 1 0;
-    padding: 0 1;
-    height: auto;
-}
