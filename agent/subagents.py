@@ -63,6 +63,21 @@ Never mark proved without reproducible evidence.""",
     "reporting": """You are a reporting subagent. Produce structured, defensible output. No unsupported claims.
 Return a final JSON object in a ```json``` block with schema:
 {"summary":"","findings":[{"title":"","severity":"info","status":"attempted","asset":"","repro":"","evidence_ref":"","impact":"","remediation":""}],"remediation":[""]}""",
+    "goal_decomposer": """You are the goal model. Split a target objective into small verifiable objectives, each with explicit success criteria that can be checked against evidence. Never invent assets.
+Return a final JSON object in a ```json``` block with schema:
+{"goals":[{"text":"","scope":[""],"success_criteria":[""]}],"next_step":""} Max 8 goals.""",
+    "intent_planner": """You are the planner. Given the goal and the shared asset graph, emit short single-action intents anchored to real assets. Each intent must name one bounded tool action and a success signal. No destructive actions.
+Return a final JSON object in a ```json``` block with schema:
+{"intents":[{"text":"","kind":"probe|validate|pivot","anchor":{"kind":"","id":""},"success_signal":"","actions":[{"tool":"script|http_request|shell|browser","args":{}}]}],"next_step":""}""",
+    "coverage_auditor": """You are the coverage auditor. Compare what was attempted with the live asset graph; name only real gaps and dead ends with reasoning. Do not claim coverage for unanchored work.
+Return a final JSON object in a ```json``` block with schema:
+{"reviewed":[{"kind":"","id":"","status":"","why":""}],"uncovered":[{"kind":"","id":"","why":""}],"next_step":""}""",
+    "poc_builder": """You are the PoC builder. From evidence and findings, produce minimal reproducible proof steps and commands/scripts. Prefer controlled, reversible proofs and include cleanup. Never claim impact you did not observe.
+Return a final JSON object in a ```json``` block with schema:
+{"pocs":[{"title":"","poc_steps":[""],"poc_command":"","poc_script":"","evidence_ref":"","impact":"","remediation":""}],"next_step":""}""",
+    "retest_reviewer": """You are the retester. Given prior findings and replay output, classify each as still_reproducible, fixed, or cannot_confirm with a concrete reason. Never confirm without evidence.
+Return a final JSON object in a ```json``` block with schema:
+{"retests":[{"finding":"","verdict":"still_reproducible|fixed|cannot_confirm","why":"","evidence_ref":""}],"next_step":""}""",
 }
 
 SUBTOOL_RE = re.compile(r"```subtool\s*(\{.*?\})\s*```", re.DOTALL)
@@ -78,6 +93,16 @@ ROLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "validations": {"type": "array"}, "next_step": {"type": "string"}}},
     "reporting": {"type": "object", "required": ["summary", "findings", "remediation"], "properties": {
         "summary": {"type": "string"}, "findings": {"type": "array"}, "remediation": {"type": "array"}}},
+    "goal_decomposer": {"type": "object", "required": ["goals", "next_step"], "properties": {
+        "goals": {"type": "array"}, "next_step": {"type": "string"}}},
+    "intent_planner": {"type": "object", "required": ["intents", "next_step"], "properties": {
+        "intents": {"type": "array"}, "next_step": {"type": "string"}}},
+    "coverage_auditor": {"type": "object", "required": ["reviewed", "uncovered", "next_step"], "properties": {
+        "reviewed": {"type": "array"}, "uncovered": {"type": "array"}, "next_step": {"type": "string"}}},
+    "poc_builder": {"type": "object", "required": ["pocs", "next_step"], "properties": {
+        "pocs": {"type": "array"}, "next_step": {"type": "string"}}},
+    "retest_reviewer": {"type": "object", "required": ["retests", "next_step"], "properties": {
+        "retests": {"type": "array"}, "next_step": {"type": "string"}}},
 }
 
 

@@ -115,6 +115,10 @@ def risk_of(tool: str, args: Dict[str, Any] | None = None) -> str:
         return "shell"  # makes network requests
     if tool == "verify_findings":
         return "shell"  # executes replay scripts
+    if tool == "engagement":
+        return "safe"  # reads/writes local target state only
+    if tool == "engagement_run":
+        return "shell"  # executes bounded worker actions through the same gates
     if tool == "proxy_control":
         action = str(args.get("action") or "").lower()
         return "shell" if action in ("start", "stop", "replay") else "safe"
@@ -225,6 +229,10 @@ def describe(tool: str, args: Dict[str, Any] | None, risk: str) -> str:
         return f"Oracle validation ({risk}):\n{args.get('kind')} {args.get('url') or args.get('url_a') or ''}"
     if tool == "verify_findings":
         return f"Verify/replay findings ({risk}):\n{args.get('action')} {args.get('finding') or ''}"
+    if tool == "engagement":
+        return f"Engagement goals/planner ({risk}):\n{args.get('action')} {args.get('text') or ''}"
+    if tool == "engagement_run":
+        return f"Engagement worker ({risk}):\n{args.get('intent_id') or 'next queued intent'}"
     if tool == "proxy_control":
         return f"Proxy control ({risk}):\n{args.get('action')} target={args.get('target') or ''} port={args.get('port') or ''}"
     if tool == "source_index":

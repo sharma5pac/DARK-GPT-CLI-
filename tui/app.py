@@ -79,7 +79,14 @@ COMMANDS: List[tuple[str, str]] = [
     ("/budget", "Show/set tool/step budget (/budget tools 60, /budget steps 40)"),
     ("/steps", "Alias for /budget steps <n>"),
     ("/proxy", "Proxy control (/proxy status|start|stop|import)"),
-    ("/verify-findings", "Replay finding repros and mark fixed/still_vulnerable"),
+    ("/verify-findings", "Replay finding repros via core tool (/verify-findings [action] [finding] [timeout])"),
+    ("/goal", "Add a verifiable goal: /goal <text>"),
+    ("/goals", "Show goals/intents summary for the active target"),
+    ("/intents", "Emit/list short anchored intents (/intents [focus])"),
+    ("/coverage", "Show work-graph anchor coverage for the active target"),
+    ("/workgraph", "Exploration graph: /workgraph [json|dot]"),
+    ("/engagement-run", "Claim and run ONE bounded intent via core engagement_run"),
+    ("/retest", "Retest a finding: /retest [finding] (blank = retest_status)"),
     ("/bb", "Blackboard summary/post (/bb, /bb post intent|fact|hint <text>)"),
     ("/attack-paths", "Rank multi-hop attack paths from knowledge graph"),
     ("/tools-search", "Preview deferred tool schemas (/tools-search <query>)"),
@@ -154,8 +161,8 @@ class CompactCard(Static):
         Binding("space", "toggle", "Expand/collapse", show=False),
     ]
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
         self.expanded = False
         self.add_class("compact-card")
 
@@ -343,6 +350,128 @@ class PlanPanel(Static):
             elif step.get("status") == "pending" and ok:
                 step["status"] = "finished"
         self._paint()
+
+
+class EngagementPanel(CompactCard):
+    """Live GOALS / WORKING / FINISHED / COVERAGE card docked beside the chat.
+
+    Reads engagement.summary(active_target) (which includes work_graph.summary)
+    from real per-target state. Enter/click/space expands the detail; it is never
+    a static badge.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.target = ""
+        self.snapshot: Dict[str, Any] = {}
+        self.add_class("engagement-panel")
+        # Docked in #body so the conversation shrinks instead of being covered.
+        # Inline styles keep this self-contained in app.py (shared theme.tcss is
+        # left untouched).
+        self.styles.dock = "right"
+        self.styles.width = 62
+        self.styles.height = "auto"
+        self.styles.max_height = 14
+        self.styles.padding = (0, 1)
+        self.styles.background = "#101010"
+        self.styles.border = ("round", "#333333")
+
+    def on_mount(self) -> None:
+        self.refresh_view()
+
+    def accent(self) -> str:
+        return "#c58af9"
+
+    @staticmethod
+    def _label(value: Any, limit: int = 70) -> str:
+        return " ".join(ascii_safe(value).split())[:limit]
+
+    @staticmethod
+    def _num(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    def set_snapshot(self, target: str, snapshot: Dict[str, Any]) -> None:
+        self.target = self._label(target, 24)
+        self.snapshot = snapshot or {}
+        self.refresh_view()
+
+    def head_text(self) -> Text:
+        goals = self.snapshot.get("goals") or {}
+        intents = self.snapshot.get("intents") or {}
+        cov = self.snapshot.get("coverage") or {}
+        try:
+            pct = float(cov.get("percent") or 0)
+        except Exception:
+            pct = 0.0
+        head = (
+            f"{self.target or '-'}: GOALS {self._num(goals.get('total'))}"
+            f" ({self._num(goals.get('open'))} open)"
+            f" | WORKING {self._num(intents.get('claimed'))}"
+            f" | FINISHED {self._num(intents.get('done'))}"
+            f" | COVERAGE {pct:.0f}%"
+        )
+        return Text(ascii_safe(head)[:76], style=self.accent())
+
+    def body_text(self) -> str:
+        goals = self.snapshot.get("goals") or {}
+        intents = self.snapshot.get("intents") or {}
+        cov = self.snapshot.get("coverage") or {}
+        graph = self.snapshot.get("work_graph") or {}
+        try:
+            pct = float(cov.get("percent") or 0)
+        except Exception:
+            pct = 0.0
+        lines = [
+            f"Engagement: {self.target or '-'}",
+            f"GOALS {self._num(goals.get('total'))} | open {self._num(goals.get('open'))}"
+            f" | WORKING {self._num(intents.get('claimed'))}"
+            f" | FINISHED {self._num(intents.get('done'))}"
+            f" | failed {self._num(intents.get('failed'))}",
+            f"COVERAGE {pct:.0f}% ({self._num(cov.get('covered'))}/{self._num(cov.get('world_nodes'))})"
+            f" | uncovered {len(cov.get('uncovered') or [])}",
+        ]
+        for goal in (goals.get("recent") or [])[-3:]:
+            lines.append(
+                f"- goal [{goal.get('status') or 'open'}] {self._label(goal.get('text') or '', 80)}"
+            )
+        for intent in (intents.get("recent") or [])[-4:]:
+            lines.append(
+                f"- intent [{intent.get('status') or '?'}] {self._label(intent.get('id') or '', 16)}"
+                f" {self._label(intent.get('text') or '', 64)}"
+            )
+        lines.append(
+            f"work graph: {self._num(graph.get('nodes'))} nodes | {self._label(graph.get('path') or '', 90)}"
+        )
+        for retest in (self.snapshot.get("retests") or [])[-2:]:
+            lines.append(
+                f"- retest [{retest.get('verdict') or '?'}] {self._label(retest.get('finding') or '', 64)}"
+            )
+        return "\n".join(lines)
+
+
+class EngagementCard(CompactCard):
+    """One-line engagement event; Enter/click expands the short preview."""
+
+    def __init__(self, title: str, preview: str = "", ok: bool = True) -> None:
+        super().__init__()
+        self.event_title = ascii_safe(title)
+        self.event_preview = ascii_safe(preview)
+        self.event_ok = bool(ok)
+
+    def on_mount(self) -> None:
+        self.refresh_view()
+
+    def accent(self) -> str:
+        return "#6abf69" if self.event_ok else "#ff6b6b"
+
+    def head_text(self) -> Text:
+        return Text(f"engagement: {self.event_title[:88]}", style=self.accent())
+
+    def body_text(self) -> str:
+        return self.event_preview or self.event_title
 
 
 class ThoughtBlock(CompactCard):
@@ -2174,6 +2303,7 @@ class DarkGPTApp(App):
                 yield Button("Tools 0", id="badge-tools", classes="badge")
         with Vertical(id="body"):
             yield VerticalScroll(id="conversation")
+            yield EngagementPanel(id="engagement-panel")
             yield OptionList(id="palette")
             yield Static("", id="liveness-bar")
             with Vertical(id="prompt-wrap"):
@@ -2255,6 +2385,7 @@ class DarkGPTApp(App):
         self.run_worker(self._startup_inventory(), exclusive=False)
         self.refresh_status()
         self.update_context()
+        self.run_worker(self._refresh_engagement_panel(), exclusive=False)
         self._system_note(
             f"DarkGPT TUI v{APP_VERSION} | Enter send | Shift+Enter newline | "
             "Tab Build/Ask (any focus) | Ctrl+P commands | Ctrl+M MCP | Ctrl+G skills | Ctrl+T tools | Ctrl+L model | "
@@ -2438,6 +2569,204 @@ class DarkGPTApp(App):
         conv.mount(note)
         conv.scroll_end(animate=False)
 
+    # ------------------------------------------------------- engagement tools
+    def _engagement_target(self) -> str:
+        return str(
+            getattr(self, "active_target", "")
+            or appconfig.get("active_target")
+            or ""
+        ).strip()
+
+    def _core_registry(self) -> ToolRegistry:
+        """Registry with the same gates/callbacks run_agent uses for core tools."""
+        return ToolRegistry(
+            mcp_manager=self.mcp,
+            disabled=self.disabled_tools,
+            disabled_servers=self.disabled_servers,
+            permission_callback=self._permission_callback,
+            permission_mode="strict" if self.mode == "Ask" else self.permission_mode,
+            hooks_enabled=self.hooks_enabled,
+            skills=self.skills,
+            ask_callback=self._ask_callback,
+            model=self.model,
+        )
+
+    async def _run_core_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        raw = await self._core_registry().run(
+            name, args, on_event=self._on_engagement_core_event
+        )
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {"ok": False, "error": ascii_safe(str(raw))[:400]}
+        return payload if isinstance(payload, dict) else {"ok": True, "result": payload}
+
+    async def _refresh_engagement_panel(self) -> None:
+        target = self._engagement_target()
+        snapshot: Dict[str, Any] = {}
+        if target:
+            try:
+                from agent import engagement as engagement_util, work_graph as work_graph_util
+
+                snapshot = await asyncio.to_thread(engagement_util.summary, target)
+                snapshot["work_graph"] = await asyncio.to_thread(work_graph_util.summary, target)
+            except Exception:
+                snapshot = {}
+        try:
+            self.query_one("#engagement-panel", EngagementPanel).set_snapshot(target, snapshot)
+        except Exception:
+            pass
+
+    def _on_engagement_core_event(self, event: Dict[str, Any]) -> None:
+        """on_event may fire on a tool thread; post the render back to the UI."""
+        if str(event.get("type") or "") not in (
+            "engagement", "goal_added", "engagement_intent"
+        ):
+            return
+        self.call_later(self._render_engagement_event, dict(event))
+
+    async def _render_engagement_event(self, event: Dict[str, Any]) -> None:
+        kind = str(event.get("type") or "")
+        if kind == "engagement":
+            action = str(event.get("action") or "summary")
+            preview = str(event.get("preview") or "")
+            card = EngagementCard(
+                f"{action} | {ascii_safe(preview)[:70]}", preview,
+                bool(event.get("ok", True)),
+            )
+        elif kind == "goal_added":
+            count = event.get("count") or 1
+            card = EngagementCard(
+                f"goal added ({count})",
+                f"target: {event.get('target') or '-'}", True,
+            )
+        elif kind == "engagement_intent":
+            status = str(event.get("status") or "")
+            text = str(event.get("text") or event.get("preview") or "")[:70]
+            detail = " ".join(
+                str(event.get(k) or "") for k in ("intent_id", "worker")
+            ).strip()
+            preview = str(event.get("preview") or text)
+            card = EngagementCard(
+                f"intent [{status}] {text}",
+                f"{detail} {preview}".strip(), status != "failed",
+            )
+        else:
+            return
+        try:
+            conv = self.query_one("#conversation", VerticalScroll)
+            spinner = next(iter(conv.query(ActivitySpinner)), None)
+            if spinner is not None:
+                await conv.mount(card, before=spinner)
+            else:
+                await conv.mount(card)
+            conv.scroll_end(animate=False)
+        except Exception:
+            pass
+        await self._refresh_engagement_panel()
+
+    @staticmethod
+    def _engagement_note(action: str, payload: Dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return f"engagement {action}: unexpected result"
+        if payload.get("error"):
+            return f"engagement {action} failed: {payload['error']}"
+        target = payload.get("target") or "-"
+        lines = [f"engagement {action} ({target})"]
+        if action in ("summary", "goals"):
+            goals = payload.get("goals") or {}
+            if isinstance(goals, list):
+                lines.append(
+                    f"goals: {len(goals)} | intents: {len(payload.get('intents') or [])}"
+                    f" | workers: {len(payload.get('workers') or [])}"
+                )
+                for goal in goals[-12:]:
+                    lines.append(
+                        f"- [{goal.get('status') or 'open'}] {str(goal.get('text') or '')[:120]}"
+                    )
+            elif isinstance(goals, dict):
+                recent = goals.get("recent") or []
+                intents = goals.get("intents") or {}
+                lines.append(
+                    f"goals: {goals.get('total', len(recent))} total | "
+                    f"intents: {intents.get('total', 0)} | workers: {len(payload.get('workers') or [])}"
+                )
+                for goal in (recent if isinstance(recent, list) else [])[-12:]:
+                    lines.append(
+                        f"- [{goal.get('status') or 'open'}] {str(goal.get('text') or '')[:120]}"
+                    )
+        elif action == "intents":
+            lines.append(
+                f"emitted {payload.get('emitted') or 0} | coverage {payload.get('coverage')}%"
+            )
+            for item in (payload.get("intents") or [])[:12]:
+                lines.append(
+                    f"- [{item.get('status') or '?'}] {str(item.get('id') or '')} "
+                    f"{str(item.get('text') or '')[:100]}"
+                )
+        elif action == "coverage":
+            lines.append(
+                f"coverage {payload.get('percent')}% | "
+                f"{payload.get('covered')}/{payload.get('world_nodes')} anchored assets | "
+                f"uncovered {len(payload.get('uncovered') or [])}"
+            )
+            for kind, info in (payload.get("per_kind") or {}).items():
+                lines.append(f"- {kind}: {info.get('covered')}/{info.get('total')}")
+        elif action == "graph":
+            graph = payload.get("graph") or {}
+            lines.append(
+                f"work graph: {graph.get('nodes') or len(graph.get('nodes') or {})} nodes | "
+                f"path: {payload.get('path') or '-'}"
+            )
+            if payload.get("format") == "dot":
+                lines.append(str(payload.get("dot") or "")[:5000])
+            else:
+                lines.append(json.dumps(graph, indent=2, ensure_ascii=False)[:5000])
+        else:
+            lines.append(json.dumps(payload, indent=2, ensure_ascii=False)[:3000])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _verify_findings_note(action: str, payload: Dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return f"verify_findings {action}: unexpected result"
+        if payload.get("error"):
+            return f"verify_findings failed: {payload['error']}"
+        results = payload.get("results")
+        if results is not None:
+            lines = [f"verify_findings {action} ({payload.get('target') or '-'})"]
+            for row in results:
+                lines.append(
+                    f"- {str(row.get('title') or row.get('finding') or 'finding')[:80]}: "
+                    f"{row.get('verdict') or row.get('status') or '?'} "
+                    f"(exit {row.get('exit_code', '-')})"
+                    + (f" evidence={row.get('evidence_ref')}" if row.get("evidence_ref") else "")
+                )
+                if row.get("reason"):
+                    lines.append(f"    {ascii_safe(str(row['reason']))[:160]}")
+            return "\n".join(lines)
+        if "retests" in payload:
+            rows = payload.get("retests") or []
+            return "\n".join(
+                [f"Retest history ({len(rows)}):"]
+                + [
+                    f"- {r.get('finding')}: {r.get('verdict')} ({r.get('id')})"
+                    for r in rows[-20:]
+                ]
+            )
+        findings = payload.get("findings") or []
+        if not findings:
+            return "verify_findings: " + json.dumps(payload, indent=2, ensure_ascii=False)[:3000]
+        return "\n".join(
+            [f"Findings ({len(findings)}):"]
+            + [
+                f"- {f.get('title') or f.get('id')} [{f.get('status')}/{f.get('severity')}] "
+                f"repro={bool(f.get('repro_script') or f.get('repro_command'))} "
+                f"last={f.get('last_retest_verdict') or '-'}"
+                for f in findings[:50]
+            ]
+        )
+
     async def _startup_inventory(self, force: bool = False) -> None:
         """Build/load the local capability map without blocking startup."""
         panel = None
@@ -2500,7 +2829,7 @@ class DarkGPTApp(App):
         keep_tail = 40
         if len(children) <= keep_tail:
             return
-        prune_types = (ToolCard, FindingCard, ThoughtBlock, PhaseTimeline, BackgroundIndicator, DiffCard, ErrorCard, SectionLabel)
+        prune_types = (ToolCard, FindingCard, ThoughtBlock, PhaseTimeline, BackgroundIndicator, DiffCard, ErrorCard, SectionLabel, EngagementCard)
         for child in children[:-keep_tail]:
             if isinstance(child, prune_types):
                 try:
@@ -2607,6 +2936,17 @@ class DarkGPTApp(App):
             await self._handle_proxy_command(parts)
         elif name == "/verify-findings":
             await self._handle_verify_findings_command(parts)
+        elif name == "/goal":
+            await self._handle_engagement_goal_command(command)
+        elif name in ("/goals", "/intents", "/coverage", "/workgraph"):
+            await self._handle_engagement_info_command(name, parts)
+        elif name == "/engagement-run":
+            await self._handle_engagement_run_command(parts)
+        elif name == "/retest":
+            await self._handle_verify_findings_command(
+                ["/verify-findings", "retest_status" if len(parts) < 2 else "retest"] + parts[1:],
+                allow_timeout=False,
+            )
         elif name == "/bb":
             await self._handle_blackboard_command(parts)
         elif name == "/attack-paths":
@@ -2803,6 +3143,7 @@ class DarkGPTApp(App):
                 self.active_target = parts[1].strip()
                 appconfig.update(active_target=self.active_target)
                 self._system_note(f"Active target: {self.active_target}")
+                self.run_worker(self._refresh_engagement_panel(), exclusive=False)
             else:
                 self._system_note(f"Active target: {self.active_target or '(none)'}\nUse /target <name-or-domain> to set it.")
         elif name == "/targets":
@@ -3463,48 +3804,125 @@ class DarkGPTApp(App):
             res = self._proxy_manager.status()
         self._system_note(json.dumps(res, indent=2, ensure_ascii=False)[:6000])
 
-    async def _handle_verify_findings_command(self, parts: List[str]) -> None:
-        target = str(appconfig.get("active_target") or "").strip()
+    async def _handle_verify_findings_command(
+        self, parts: List[str], allow_timeout: bool = True
+    ) -> None:
+        """Route replay/retest through the core verify_findings tool.
+
+        The core tool owns evidence recording, stable node keys and the proof
+        gate; no replay logic is duplicated here.
+        """
+        target = self._engagement_target()
         if not target:
             self._system_note("No active target. Use /target <name> first.")
             return
-        from agent import knowledge_graph as kg_util, evidence as ev, reporting as rep
-        args = parts[1:]
+        args = list(parts[1:])
+        timeout = 120
+        if allow_timeout and args and args[-1].isdigit():  # /verify-findings replay 30
+            timeout = max(5, min(600, int(args[-1])))
+            args = args[:-1]
         action = args[0].lower() if args else "list"
-        findings = kg_util.query(target, kind="finding", limit=200)
-        if action == "list":
-            rows = []
-            for f in findings[:50]:
-                a = f.get("attrs") or {}
-                rows.append(f"- {a.get('title')} [{a.get('status')}/{a.get('severity')}] repro={bool(a.get('repro_script') or a.get('repro_command'))}")
-            self._system_note("Findings:\n" + ("\n".join(rows) if rows else "(none)"))
+        if action == "retest" and len(args) < 2:
+            action = "retest_status"
+        allowed = {
+            "list", "save_repro", "save_poc", "replay", "replay_all",
+            "retest", "retest_all", "retest_status",
+        }
+        if action not in allowed:
+            self._system_note(
+                "Usage: /verify-findings [list|replay|replay_all|retest|retest_all|"
+                "retest_status] [finding] [timeout] | /retest [finding]"
+            )
             return
-        # replay/replay_all: minimal local execution
-        selected = findings if action == "replay_all" else findings[:1]
-        results = []
-        for f in selected:
-            a = dict(f.get("attrs") or {})
-            cmd = a.get("repro_command")
-            script = a.get("repro_script")
-            if not cmd and not script:
-                results.append(f"{a.get('title')}: skipped (no repro)")
-                continue
-            if script:
-                p = Path(script)
-                if not p.is_absolute(): p = kg_util.target_dir(target) / script
-                shell_cmd = f"bash {p}" if p.suffix == ".sh" else f"python3 {p}"
-            else:
-                shell_cmd = str(cmd)
-            proc = await asyncio.create_subprocess_shell(shell_cmd, cwd=os.getcwd(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            out, _ = await proc.communicate()
-            verdict = "still_vulnerable" if proc.returncode == 0 else "fixed_or_not_reproduced"
-            a["last_replay_verdict"] = verdict
-            a["last_replay_exit"] = proc.returncode
-            a["status"] = "proved" if verdict == "still_vulnerable" else a.get("status", "attempted")
-            kg_util.upsert_node(target, "finding", str(a.get("title") or f.get("id")), a, source="verify_findings")
-            ev.record(target, tool="verify_findings", args={"finding": a.get("title")}, result=out.decode("utf-8",errors="replace")[-4000:], ok=proc.returncode==0, source="verify_findings", tags=["replay", verdict])
-            results.append(f"{a.get('title')}: {verdict} (exit {proc.returncode})")
-        self._system_note("\n".join(results) or "No findings selected.")
+        payload = await self._run_core_tool("verify_findings", {
+            "action": action,
+            "target": target,
+            "finding": " ".join(args[1:]).strip(),
+            "timeout": timeout,
+        })
+        self._system_note(self._verify_findings_note(action, payload))
+        await self._refresh_engagement_panel()
+
+    async def _handle_engagement_goal_command(self, command: str) -> None:
+        target = self._engagement_target()
+        if not target:
+            self._system_note("No active target. Use /target <name> first.")
+            return
+        parts = (command or "").strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            self._system_note("Usage: /goal <text>")
+            return
+        payload = await self._run_core_tool("engagement", {
+            "action": "goal", "target": target,
+            "text": parts[1].strip(), "source": "user",
+        })
+        goal = payload.get("goal") or {}
+        note = (
+            f"Goal {'updated' if payload.get('deduplicated') else 'added'}"
+            f" [{goal.get('id') or '?'}] {goal.get('text') or ''}"
+        )
+        criteria = goal.get("success_criteria") or []
+        if criteria:
+            note += "\nverify: " + " | ".join(str(c)[:120] for c in criteria[:3])
+        self._system_note(note)
+        await self._refresh_engagement_panel()
+
+    async def _handle_engagement_info_command(self, name: str, parts: List[str]) -> None:
+        target = self._engagement_target()
+        if not target:
+            self._system_note("No active target. Use /target <name> first.")
+            return
+        action = {
+            "/goals": "goals", "/intents": "intents",
+            "/coverage": "coverage", "/workgraph": "graph",
+        }.get(name, "summary")
+        args: Dict[str, Any] = {"action": action, "target": target, "limit": 12}
+        if action == "intents":
+            args["focus"] = " ".join(parts[1:]).strip()
+        if action == "graph":
+            fmt = parts[1].lower() if len(parts) > 1 else "json"
+            args["fmt"] = fmt if fmt in ("json", "dot") else "json"
+        payload = await self._run_core_tool("engagement", args)
+        if action == "graph" and isinstance(payload, dict):
+            try:
+                from agent import work_graph as work_graph_util
+
+                payload["path"] = str(work_graph_util.work_path(target))
+            except Exception:
+                pass
+        self._system_note(self._engagement_note(action, payload))
+        await self._refresh_engagement_panel()
+
+    async def _handle_engagement_run_command(self, parts: List[str]) -> None:
+        """Claim and execute ONE bounded intent; gates live in ToolRegistry.run."""
+        target = self._engagement_target()
+        if not target:
+            self._system_note("No active target. Use /target <name> first.")
+            return
+        args: Dict[str, Any] = {
+            "target": target,
+            "worker_id": f"tui-{int(time.time()) % 100000}",
+        }
+        if len(parts) > 1 and parts[1].strip():
+            args["intent_id"] = parts[1].strip()
+        payload = await self._run_core_tool("engagement_run", args)
+        if payload.get("error"):
+            self._system_note(
+                f"engagement_run: {payload['error']}"
+                + (f" (queued={payload.get('queued')})" if payload.get("queued") else "")
+            )
+            await self._refresh_engagement_panel()
+            return
+        lines = [
+            f"engagement_run: {payload.get('status') or '?'} | "
+            f"worker {payload.get('worker') or '-'} | intent {payload.get('intent_id') or '-'}"
+        ]
+        for row in payload.get("results") or []:
+            lines.append(f"- {row.get('tool')}: {'ok' if row.get('ok') else 'fail'}")
+        if payload.get("evidence_refs"):
+            lines.append("evidence: " + ", ".join(str(x) for x in payload["evidence_refs"][:6]))
+        self._system_note("\n".join(lines))
+        await self._refresh_engagement_panel()
 
     async def _handle_blackboard_command(self, parts: List[str]) -> None:
         target = str(appconfig.get("active_target") or "").strip()
@@ -4280,6 +4698,9 @@ class DarkGPTApp(App):
                 elif event_type == "replay":
                     preview = ascii_safe(str(event.get("preview") or ""))
                     self._system_note(f"GUI replay {event.get('action')}: {'ok' if event.get('ok') else 'failed'} {preview}")
+                elif event_type in ("engagement", "goal_added", "engagement_intent"):
+                    await rotate_draft("Note")
+                    await self._render_engagement_event(dict(event))
                 elif event_type in ("permission_denied", "hook_blocked"):
                     await rotate_draft("Note")
                     self._system_note(
@@ -4442,6 +4863,7 @@ class DarkGPTApp(App):
             self.busy = False
             timeline.finish_all(ok=not failed)
             self.refresh_status()
+            self.run_worker(self._refresh_engagement_panel(), exclusive=False)
 
         # Flush any throttled streamed content into the final response only.
         final_text = "".join(content_parts)

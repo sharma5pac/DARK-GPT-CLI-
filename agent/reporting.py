@@ -52,6 +52,13 @@ def build_report_data(target: str) -> Dict[str, Any]:
             "asset": a.get("asset") or "",
             "details": a.get("details") or "",
             "repro": a.get("repro") or a.get("reproduction") or "",
+            "poc_steps": a.get("poc_steps") or [],
+            "poc_command": a.get("poc_command") or "",
+            "poc_script": a.get("repro_script") or a.get("poc_script") or "",
+            "poc_sha256": a.get("repro_sha256") or a.get("poc_sha256") or "",
+            "last_retest_verdict": a.get("last_retest_verdict") or "",
+            "last_retest_at": a.get("last_retest_at") or "",
+            "retest_count": a.get("retest_count") or 0,
             "impact": a.get("impact") or "",
             "remediation": a.get("remediation") or "",
             "evidence_ref": a.get("evidence_ref") or "",
@@ -83,6 +90,12 @@ def build_report_data(target: str) -> Dict[str, Any]:
         blackboard_summary = bb.summary(target)
     except Exception:
         pass
+    engagement_summary = {}
+    try:
+        from agent import engagement as eng
+        engagement_summary = eng.summary(target, limit=8)
+    except Exception:
+        pass
     return {
         "target": g.get("target", target),
         "slug": g.get("slug", ""),
@@ -109,6 +122,7 @@ def build_report_data(target: str) -> Dict[str, Any]:
         },
         "attack_paths": attack_paths,
         "blackboard": blackboard_summary,
+        "engagement": engagement_summary,
         "execution_trace": trace,
         "evidence_by_tool": ev.get("by_tool") or {},
     }
@@ -145,6 +159,16 @@ def build_markdown(target: str) -> str:
             lines.append(f"\n{f['details']}")
         if f.get("repro"):
             lines.append(f"\n**Reproduction**\n\n{f['repro']}")
+        if f.get("poc_steps"):
+            lines.append("\n**Proof of concept (steps)**\n")
+            for step in f["poc_steps"]:
+                lines.append(f"- {step}")
+        if f.get("poc_command"):
+            lines.append(f"\n**PoC command**\n\n```\n{f['poc_command']}\n```")
+        if f.get("poc_script"):
+            lines.append(f"\n- PoC script: `{f['poc_script']}`" + (f" (sha256 `{str(f['poc_sha256'])[:16]}`)" if f.get("poc_sha256") else ""))
+        if f.get("last_retest_verdict"):
+            lines.append(f"- Last retest: `{f['last_retest_verdict']}` at {f.get('last_retest_at') or '-'} ({f.get('retest_count') or 0} total)")
         if f.get("impact"):
             lines.append(f"\n**Impact**\n\n{f['impact']}")
         if f.get("remediation"):
@@ -174,6 +198,17 @@ def build_markdown(target: str) -> str:
         seq = " -> ".join(f"{n.get('kind')}:{n.get('label')}" for n in pth.get("nodes", []))
         lines.append(f"- score={pth.get('score')}: {seq}")
     lines.append("")
+    eng = d.get("engagement") or {}
+    if eng:
+        cov = eng.get("coverage") or {}
+        lines.append("## Engagement (goals / intents / coverage)")
+        lines.append("")
+        lines.append(f"- Goals: {(eng.get('goals') or {}).get('total', 0)} total, {(eng.get('goals') or {}).get('open', 0)} open")
+        lines.append(f"- Intents: {(eng.get('intents') or {}).get('total', 0)} total, {(eng.get('intents') or {}).get('done', 0)} done")
+        lines.append(f"- Coverage: {cov.get('percent', 0)}% ({cov.get('covered', 0)}/{cov.get('world_nodes', 0)} anchored assets)")
+        for retest in (eng.get("retests") or [])[-10:]:
+            lines.append(f"- retest [{retest.get('verdict')}] {retest.get('finding')}")
+        lines.append("")
     lines.append("## Execution Trace (recent evidence)")
     lines.append("")
     lines.append("| Time (UTC) | ID | Tool | OK | SHA-256 | Preview |")
@@ -197,6 +232,14 @@ def build_html(target: str) -> str:
         body = f"<pre>{esc(f.get('details',''))}</pre>"
         if f.get("repro"):
             body += f"<h4>Reproduction</h4><pre>{esc(f['repro'])}</pre>"
+        if f.get("poc_steps"):
+            body += "<h4>PoC steps</h4><ol>" + "".join(f"<li>{esc(step)}</li>" for step in f["poc_steps"]) + "</ol>"
+        if f.get("poc_command"):
+            body += f"<h4>PoC command</h4><pre>{esc(f['poc_command'])}</pre>"
+        if f.get("poc_script"):
+            body += f"<p>PoC script: <code>{esc(f['poc_script'])}</code> {esc(str(f.get('poc_sha256') or '')[:16])}</p>"
+        if f.get("last_retest_verdict"):
+            body += f"<p>Last retest: <code>{esc(f['last_retest_verdict'])}</code> ({esc(f.get('retest_count') or 0)} total)</p>"
         if f.get("impact"):
             body += f"<h4>Impact</h4><pre>{esc(f['impact'])}</pre>"
         if f.get("remediation"):
@@ -208,6 +251,17 @@ def build_html(target: str) -> str:
         if meta: body = "<p>" + " | ".join(meta) + "</p>" + body
         finding_blocks.append(f"<section class='finding'><h3>{f['index']}. [{esc(f['severity'].upper())}] [{esc(f['status'].upper())}] {esc(f['title'])}</h3>{body}</section>")
 
+    eng = d.get("engagement") or {}
+    engagement_html = ""
+    if eng:
+        cov = eng.get("coverage") or {}
+        engagement_html = (
+            "<h2>Engagement</h2><ul>"
+            f"<li>Goals: {(eng.get('goals') or {}).get('total', 0)} total, {(eng.get('goals') or {}).get('open', 0)} open</li>"
+            f"<li>Intents: {(eng.get('intents') or {}).get('total', 0)} total, {(eng.get('intents') or {}).get('done', 0)} done</li>"
+            f"<li>Coverage: {esc(cov.get('percent', 0))}% ({esc(cov.get('covered', 0))}/{esc(cov.get('world_nodes', 0))})</li>"
+            "</ul>"
+        )
     rows = []
     for e in d["execution_trace"][-150:]:
         rows.append("<tr><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>".format(
@@ -225,6 +279,7 @@ def build_html(target: str) -> str:
 <li>Evidence: {s['evidence_entries']} (ok={s['evidence_ok']}, failed={s['evidence_failed']})</li>
 </ul>
 <h2>Findings</h2>{''.join(finding_blocks) or '<p><em>No findings recorded yet.</em></p>'}
+{engagement_html}
 <h2>Execution Trace</h2>
 <table><thead><tr><th>Time</th><th>ID</th><th>Tool</th><th>OK</th><th>SHA-256</th><th>Preview</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=6><em>None</em></td></tr>'}</tbody></table>
 </body></html>"""
@@ -237,12 +292,13 @@ def build_json(target: str) -> str:
 def build_csv(target: str) -> str:
     d = build_report_data(target)
     out = io.StringIO()
-    fieldnames = ["index", "id", "title", "severity", "status", "asset", "confidence", "evidence_ref", "details", "repro", "impact", "remediation", "sources"]
+    fieldnames = ["index", "id", "title", "severity", "status", "asset", "confidence", "evidence_ref", "details", "repro", "poc_steps", "poc_command", "poc_script", "poc_sha256", "last_retest_verdict", "retest_count", "impact", "remediation", "sources"]
     w = csv.DictWriter(out, fieldnames=fieldnames)
     w.writeheader()
     for f in d["findings"]:
         row = dict(f)
         row["sources"] = ";".join(row.get("sources") or [])
+        row["poc_steps"] = ";".join(str(s) for s in (row.get("poc_steps") or []))
         w.writerow({k: row.get(k, "") for k in fieldnames})
     return out.getvalue()
 

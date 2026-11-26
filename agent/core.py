@@ -50,9 +50,11 @@ from agent import (
     cline_tools,
     codeintel,
     context as context_util,
+    engagement as engagement_util,
     evidence as evidence_util,
     knowledge_graph as kg_util,
     planner as planner_util,
+    work_graph as work_graph_util,
     lsp,
     memory as memory_util,
     reporting as reporting_util,
@@ -341,7 +343,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "lsp_references", "description": "Find all references to a symbol via LSP (semantic, not textual)", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}}, "required": ["path", "symbol"]}}},
             {"type": "function", "function": {"name": "lsp_diagnostics", "description": "Get type/compile diagnostics (errors, warnings) for a file from the language server or project compiler", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
             {"type": "function", "function": {"name": "lsp_rename", "description": "Semantic rename across the workspace using LSP. Preview by default; pass apply=true to write changes", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}, "new_name": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "apply": {"type": "boolean"}}, "required": ["path", "symbol", "new_name"]}}},
-            {"type": "function", "function": {"name": "delegate", "description": "Spawn an isolated read-only subagent (explore/review/test) to work on a focused task in parallel; returns a concise report", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
+            {"type": "function", "function": {"name": "delegate", "description": "Spawn an isolated read-only subagent (explore/review/test) to work on a focused task in parallel; returns a concise report", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting", "goal_decomposer", "intent_planner", "coverage_auditor", "poc_builder", "retest_reviewer"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
             {"type": "function", "function": {"name": "script", "description": "PREFERRED for speed: write and RUN a Python or bash helper script in one call. Use this first for recon/enumeration/fuzzing/parsing/bulk checks/multi-step automation/report building/data transforms-anything that would take multiple shell/read/grep/browser calls. Scripts are faster, repeatable, and saved as evidence under ~/.cache/darkgpt/scripts. Return exit_code, output, script_path. Use python for parsing/HTTP/JSON/logic; bash for quick CLI pipelines. Keep scripts focused; print clear findings.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string", "description": "Complete runnable script. Include imports/shebang assumptions as needed; print actionable output."}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds, default 30, max 120."}}, "required": ["language", "code"]}}},
             {"type": "function", "function": {"name": "discover_tools", "description": "AUTO-DISCOVER verified local tools before choosing a route. Scans PATH and ~/.local/bin, returns resolved paths, capability tags, and Kala/MCP wrapper hints. Use this whenever the task names or implies a tool such as aircrack-ng, hashcat, john, openssl, nmap, ffuf, Burp Suite, Wireshark, or Ghidra.", "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "The user objective, used to rank tools."}, "tools": {"type": "string", "description": "Optional comma-separated required tool names even if not in the catalog."}, "limit": {"type": "integer"}}, "required": ["objective"]}}},
             {"type": "function", "function": {"name": "autonomous_route", "description": "One-call autonomous tool orchestration for local pentest tools: discover -> rank -> probe top routes in parallel -> optionally execute explicit command(s) -> record evidence in the active target ledger. Emits a live GOAL/WORKING/FINISHED plan beside the prompt. Use this for any objective that names a local tool. Set execute=true only after reading --help and supply command or commands; never guess destructive commands.", "parameters": {"type": "object", "properties": {"objective": {"type": "string"}, "tool": {"type": "string", "description": "Comma-separated required tool names."}, "command": {"type": "string", "description": "One explicit command to execute when execute=true."}, "commands": {"type": "object", "description": "Optional map of tool name to explicit command, or list of {tool,command}, for multi-route execution."}, "probe": {"type": "boolean"}, "execute": {"type": "boolean"}, "timeout": {"type": "integer"}, "limit": {"type": "integer"}, "target": {"type": "string"}}, "required": ["objective"]}}},
@@ -356,11 +358,13 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "skills", "description": "Cline-style skill invocation. Load the full instructions of a configured DarkGPT skill by name and follow them for the current task. Use it when a skill matches the work; args may pass a short focus.", "parameters": {"type": "object", "properties": {"skill": {"type": "string", "description": "Skill name (exact, or case-insensitive match)."}, "args": {"type": "string", "description": "Optional focus or arguments."}}, "required": ["skill"]}}},
             {"type": "function", "function": {"name": "ask_question", "description": "Cline-style clarifying question. Ask the user ONE question with 2-5 selectable options when the requirement is genuinely ambiguous. The user's answer is returned to you. Do not use it for questions you can answer by inspecting the workspace.", "parameters": {"type": "object", "properties": {"question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}, "description": "2-5 short answer choices."}}, "required": ["question", "options"]}}},
             {"type": "function", "function": {"name": "submit_and_exit", "description": "Cline-style completion signal. Call this ONLY when the task is finished and verified. Pass the final summary and whether you verified it; the turn ends immediately with that summary.", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}, "verified": {"type": "boolean"}}, "required": ["summary", "verified"]}}},
-            {"type": "function", "function": {"name": "spawn_agent", "description": "Alias of delegate: spawn one isolated read-only subagent (explore/review/test) for a focused parallel task. Returns a concise report.", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
+            {"type": "function", "function": {"name": "spawn_agent", "description": "Alias of delegate: spawn one isolated read-only subagent (explore/review/test) for a focused parallel task. Returns a concise report.", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting", "goal_decomposer", "intent_planner", "coverage_auditor", "poc_builder", "retest_reviewer"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
             {"type": "function", "function": {"name": "knowledge_graph", "description": "Persist and query a per-target knowledge graph (hosts->services->endpoints->findings/auth/creds/params). Use it to record recon so work resumes across turns. Findings: status attempted|proved|false_positive; proved requires evidence_ref present in evidence ledger. Actions: summary, list_targets, add_host, add_service, add_endpoint, add_finding, link, query, merge.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "list_targets", "add_host", "add_service", "add_endpoint", "add_finding", "add_credential", "add_auth_state", "add_param", "add_fingerprint", "link", "query", "merge", "export"]}, "target": {"type": "string"}, "host": {"type": "string"}, "port": {"type": "integer"}, "proto": {"type": "string"}, "url": {"type": "string"}, "title": {"type": "string"}, "severity": {"type": "string"}, "status": {"type": "string", "enum": ["attempted", "proved", "false_positive"]}, "details": {"type": "string"}, "evidence_ref": {"type": "string"}, "asset": {"type": "string"}, "repro": {"type": "string"}, "impact": {"type": "string"}, "remediation": {"type": "string"}, "confidence": {"type": "number"}, "name": {"type": "string"}, "kind": {"type": "string"}, "state": {"type": "string"}, "location": {"type": "string"}, "fingerprint": {"type": "string"}, "src_kind": {"type": "string"}, "src_id": {"type": "string"}, "dst_kind": {"type": "string"}, "dst_id": {"type": "string"}, "rel": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}, "attrs": {"type": "object"}, "source": {"type": "string"}, "graph": {"type": "object"}, "format": {"type": "string"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "evidence_log", "description": "Append a manual observation to the per-target append-only evidence ledger (JSONL) with SHA-256 and stable evidence id. Tool results are auto-captured when a target is active.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "tool": {"type": "string"}, "args": {}, "result": {"type": "string"}, "ok": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["tool", "result"]}}},
             {"type": "function", "function": {"name": "report_generate", "description": "Generate a pentest report from the target knowledge graph and evidence ledger. Formats: markdown, html, json, csv. JSON includes execution trace; CSV exports findings.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "html", "json", "csv"]}, "out": {"type": "string"}}, "required": []}}},
             {"type": "function", "function": {"name": "planner_update", "description": "Update per-target adaptive planner state. Use after probes/observations to record observed signal, hypothesis delta, and next action. Also manage objective, hypotheses, tasks, and dead ends.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "action": {"type": "string", "enum": ["summary", "set_objective", "add_hypothesis", "add_task", "observe", "dead_end"]}, "objective": {"type": "string"}, "text": {"type": "string"}, "title": {"type": "string"}, "status": {"type": "string"}, "owner": {"type": "string"}, "notes": {"type": "string"}, "confidence": {"type": "number"}, "evidence_ref": {"type": "string"}, "tool": {"type": "string"}, "observed": {"type": "string"}, "hypothesis_delta": {"type": "string"}, "next_action": {"type": "string"}, "signature": {"type": "string"}, "reason": {"type": "string"}, "pivot": {"type": "string"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "engagement", "description": "ARTEX-style engagement loop on the active target. Goals carry verifiable success criteria; the planner emits short intents anchored to real graph assets; coverage is computed from completed work anchors. Actions: summary, scope, goal, propose, intents, goals, coverage, graph. Use engagement_run to execute one claimed intent with real tools.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["summary", "scope", "goal", "propose", "intents", "goals", "coverage", "graph"]}, "target": {"type": "string"}, "text": {"type": "string"}, "prompt": {"type": "string"}, "scope": {}, "criteria": {}, "goal_id": {"type": "string"}, "model": {"type": "string"}, "limit": {"type": "integer"}, "focus": {"type": "string"}, "fmt": {"type": "string"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "engagement_run", "description": "Claim one queued intent and execute its bounded real-tool actions through the normal permission/hook gates. Writes results back to evidence, the world graph and the work graph; never deletes prior state. At most four actions and three attempts per intent.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "intent_id": {"type": "string"}, "worker_id": {"type": "string"}, "actions": {"type": "array", "items": {"type": "object"}}}, "required": []}}},
             {"type": "function", "function": {"name": "recon_orchestrate", "description": "Parallel recon: spawns read-only subagents for subdomains, ports/services, tech fingerprinting, endpoints, then merges findings into the target knowledge graph. Requires an active target.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "focus": {"type": "string"}, "workers": {"type": "array", "items": {"type": "string", "enum": ["subdomains", "ports", "tech", "endpoints"]}}}, "required": []}}},
             {"type": "function", "function": {"name": "task_start", "description": "Start a background task (shell command or script) and return immediately with a job id. Use this to fire multiple scripts/tasks in parallel instead of waiting on one terminal. Monitor with task_list/task_wait/task_log/task_kill.", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["shell", "script"], "description": "shell runs command; script writes+runs python/bash code."}, "command": {"type": "string", "description": "For kind=shell: bash command to run."}, "language": {"type": "string", "enum": ["python", "bash"], "description": "For kind=script."}, "code": {"type": "string", "description": "For kind=script: complete runnable code."}, "args": {"type": "array", "items": {"type": "string"}, "description": "Optional script args."}, "label": {"type": "string", "description": "Short human label."}}, "required": ["kind"]}}},
             {"type": "function", "function": {"name": "task_list", "description": "List background tasks/jobs with status, exit code, duration, and log path.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}}},
@@ -374,7 +378,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "blackboard", "description": "Shared blackboard for multi-agent coordination. Post/read Facts, Intents, and Human Hints; workers can claim/resolve asynchronously. Actions: post,list,claim,resolve,summary.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["post", "list", "claim", "resolve", "summary"]}, "target": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "intent", "hint"]}, "text": {"type": "string"}, "status": {"type": "string"}, "id": {"type": "string"}, "owner": {"type": "string"}, "note": {"type": "string"}, "refs": {"type": "array", "items": {"type": "string"}}, "confidence": {}, "limit": {"type": "integer"}, "meta": {"type": "object"}}, "required": ["action"]}}},
             {"type": "function", "function": {"name": "oracle_validate", "description": "Machine oracle validation. Treat scanner/LLM claims as untrusted until deterministic oracle verifies side effect. Kinds: differential_response, timing_delta, reflection_check, oast/interactsh (requires external listener).", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["differential_response", "timing_delta", "reflection_check", "oast", "interactsh", "callback"]}, "url": {"type": "string"}, "url_a": {"type": "string"}, "url_b": {"type": "string"}, "baseline_url": {"type": "string"}, "marker": {"type": "string"}, "samples": {"type": "integer"}, "headers": {"type": "object"}, "auth_profile": {"type": "string"}, "target": {"type": "string"}}, "required": ["kind"]}}},
             {"type": "function", "function": {"name": "attack_paths", "description": "Rank multi-hop attack paths in the target knowledge graph toward high-value assets. Uses edge provenance and node severity/value heuristics.", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "max_paths": {"type": "integer"}, "max_depth": {"type": "integer"}}, "required": []}}},
-            {"type": "function", "function": {"name": "verify_findings", "description": "Deterministic replay verification for findings with repro artifacts. Runs stored repro scripts/commands in controlled mode and marks findings still_vulnerable/fixed/error. Actions: list,save_repro,replay,replay_all.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "save_repro", "replay", "replay_all"]}, "target": {"type": "string"}, "finding": {"type": "string", "description": "Finding id/title/key fragment"}, "content": {"type": "string", "description": "For save_repro: script content"}, "kind": {"type": "string", "enum": ["py", "sh"]}, "limit": {"type": "integer"}, "timeout": {"type": "integer"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "verify_findings", "description": "Retester: deterministic replay of PoCs with SHA-256 evidence. Stable node keys (no duplicates), proof gate intact, retest history. Actions: list,save_repro,save_poc,replay,replay_all,retest,retest_all,retest_status.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "save_repro", "save_poc", "replay", "replay_all", "retest", "retest_all", "retest_status"]}, "target": {"type": "string"}, "finding": {"type": "string", "description": "Finding id/title/key fragment"}, "content": {"type": "string", "description": "For save_repro: script content"}, "kind": {"type": "string", "enum": ["py", "sh"]}, "command": {"type": "string", "description": "Optional PoC command to record"}, "steps": {}, "limit": {"type": "integer"}, "timeout": {"type": "integer"}}, "required": ["action"]}}},
         ]
 
     def all_specs(self) -> List[Dict[str, Any]]:
@@ -628,6 +632,12 @@ class ToolRegistry:
                 return clamp(json.dumps(await asyncio.to_thread(self._run_attack_paths, args), ensure_ascii=False))
             if name == "verify_findings":
                 return clamp(json.dumps(await self._run_verify_findings(args), ensure_ascii=False))
+            if name == "engagement":
+                payload = await asyncio.to_thread(self._run_engagement, args, on_event=on_event)
+                return clamp(json.dumps(payload, ensure_ascii=False))
+            if name == "engagement_run":
+                payload = await self._run_engagement_worker(args, emit=emit, on_event=on_event)
+                return clamp(json.dumps(payload, ensure_ascii=False))
             if name == "tool_search":
                 index = self.tool_index or tool_search_util.current_index(self.all_specs())
                 limit = _clamp_int(
@@ -946,6 +956,82 @@ class ToolRegistry:
                     bb.post(target, "fact", f"Finding {title} [{attrs.get('status')}] {attrs.get('asset','')}", source=f"subagent:{role}", refs=[str(node.get('key') or '')])
                 except Exception:
                     pass
+        # ARTEX-style roles: goals / intents / PoCs / retests go into the
+        # engagement state and the exploration graph with anchors, not a blackboard only.
+        try:
+            for goal in _dedupe(parsed.get("goals"), ["text"]):
+                text = str(goal.get("text") or "").strip()
+                if text:
+                    payload = engagement_util.add_goal(
+                        target, text, scope=goal.get("scope"),
+                        success_criteria=goal.get("success_criteria"),
+                        source=f"subagent:{role}",
+                    )
+                    if payload.get("ok"):
+                        imported["goals"] = imported.get("goals", 0) + 1
+            for row in _dedupe(parsed.get("intents"), ["text"]):
+                text = str(row.get("text") or "").strip()
+                if not text:
+                    continue
+                anchor = row.get("anchor") if isinstance(row.get("anchor"), dict) else {}
+                kind = str(row.get("kind") or "probe")
+                actions = engagement_util.validate_actions(row.get("actions"))
+                data = engagement_util.load(target)
+                iid = f"i-sa-{len(data.get('intents', [])) + 1}-{int(time.time()) % 100000}"
+                data["intents"].append({
+                    "id": iid, "goal_id": "", "kind": kind, "text": text[:600],
+                    "anchor": {"graph": "world", "node_key": "", "kind": str(anchor.get("kind") or ""),
+                               "id": str(anchor.get("id") or ""), "evidence_ref": ""},
+                    "success_signal": str(row.get("success_signal") or "")[:400],
+                    "budget": {"tools": 2, "steps": 2}, "attempts": 0, "status": "queued",
+                    "owner": "", "created_at": time.time(), "updated_at": time.time(), "actions": actions,
+                })
+                engagement_util.save(target, data)
+                world_id = str(anchor.get("id") or "")
+                world_kind = str(anchor.get("kind") or "")
+                if world_id and world_kind:
+                    world_node = next(
+                        (n for n in kg_util.query(target, kind=world_kind, text=world_id, limit=20)
+                         if str(n.get("id") or "").lower() == world_id.lower()), None,
+                    )
+                    if world_node:
+                        work_graph_util.anchor(
+                            target, "intent", iid, world_kind, world_id, source=f"subagent:{role}"
+                        )
+                else:
+                    work_graph_util.upsert_node(
+                        target, "intent", iid, {"text": text, "kind": kind},
+                        status="queued", source=f"subagent:{role}",
+                    )
+                imported["intents"] += 1
+            for poc in _dedupe(parsed.get("pocs"), ["title", "poc_command"]):
+                title = str(poc.get("title") or "").strip()
+                if not title:
+                    continue
+                match = next(
+                    (n for n in kg_util.query(target, kind="finding", text=title, limit=10)
+                     if str((n.get("attrs") or {}).get("title") or "").lower() == title.lower()), None,
+                )
+                if not match:
+                    continue
+                attrs = {
+                    "poc_steps": [str(s) for s in (poc.get("poc_steps") or [])][:30],
+                    "poc_command": str(poc.get("poc_command") or "")[:2000],
+                    "poc_script": str(poc.get("poc_script") or "")[:500],
+                }
+                kg_util.update_node_attrs(target, str(match.get("key") or ""), attrs, source=f"subagent:{role}")
+                imported["pocs"] = imported.get("pocs", 0) + 1
+            for row in _dedupe(parsed.get("retests"), ["finding"]):
+                finding = str(row.get("finding") or "").strip()
+                if finding:
+                    engagement_util.record_retest(
+                        target, finding, str(row.get("verdict") or "cannot_confirm"),
+                        evidence_ref=str(row.get("evidence_ref") or ""),
+                        output=str(row.get("why") or "")[:1200],
+                    )
+                    imported["retests"] = imported.get("retests", 0) + 1
+        except Exception:
+            pass
         next_step = str(parsed.get("next_step") or "").strip()
         if next_step and bb:
             try:
@@ -1275,77 +1361,287 @@ class ToolRegistry:
             return {"error": "no target set; pass target or run /target <name>"}
         return {"target": target, "paths": kg_util.rank_attack_paths(target, max_paths=int(a.get("max_paths", 10)), max_depth=int(a.get("max_depth", 5)))}
 
-    async def _run_verify_findings(self, args: Dict[str, Any]) -> Any:
+    def _run_engagement(self, args: Dict[str, Any], on_event=None) -> Any:
+        """Goals/planner/work-graph controls backed by real per-target state."""
         a = args or {}
         target = self._active_target(a)
         if not target:
             return {"error": "no target set; pass target or run /target <name>"}
-        action = str(a.get("action") or "list").strip()
-        findings = kg_util.query(target, kind="finding", limit=int(a.get("limit", 200)))
+        action = str(a.get("action") or "summary").strip().lower()
+        payload: Any
+        if action == "summary":
+            payload = engagement_util.summary(target, limit=_clamp_int(a.get("limit"), 1, 30, 8))
+        elif action == "scope":
+            payload = engagement_util.set_scope(target, a.get("scope") or a.get("text") or "")
+        elif action == "goal":
+            payload = engagement_util.add_goal(
+                target, str(a.get("text") or ""),
+                scope=a.get("scope"), success_criteria=a.get("criteria"),
+                source=str(a.get("source") or "agent"), goal_id=str(a.get("goal_id") or ""),
+            )
+        elif action == "propose":
+            payload = engagement_util.propose_goals(
+                target, str(a.get("prompt") or ""),
+                model=str(a.get("model") or ""), limit=_clamp_int(a.get("limit"), 1, 12, 6),
+            )
+        elif action == "intents":
+            payload = engagement_util.emit_intents(
+                target, goal_id=str(a.get("goal_id") or ""),
+                limit=_clamp_int(a.get("limit"), 1, 16, 8), focus=str(a.get("focus") or ""),
+            )
+        elif action == "goals":
+            data = engagement_util.load(target)
+            payload = {"ok": True, "target": target, "goals": data.get("goals", []),
+                       "intents": data.get("intents", []), "workers": data.get("workers", [])[-20:]}
+        elif action == "coverage":
+            payload = work_graph_util.coverage(target, goal_id=str(a.get("goal_id") or ""))
+            payload["ok"] = True
+        elif action == "graph":
+            payload = work_graph_util.export(target, str(a.get("fmt") or "json"))
+        else:
+            return {"error": f"unknown engagement action: {action}"}
+        if on_event:
+            on_event({
+                "type": "engagement", "action": action, "target": target,
+                "ok": bool(payload.get("ok", True)),
+                "preview": str(payload.get("error") or payload.get("coverage") or
+                               payload.get("emitted") or payload.get("count") or "")[:240],
+            })
+            if action in ("goal", "scope", "propose") and payload.get("goal") or payload.get("goals"):
+                on_event({"type": "goal_added", "target": target, "count": payload.get("count", 1)})
+        return payload
+
+    async def _run_engagement_worker(self, args: Dict[str, Any], emit=None, on_event=None) -> Any:
+        """Worker loop: claim one intent, run its bounded actions through the
+        same hooks/permission gates as a normal tool call, then write facts back
+        into both graphs. No intent is duplicated; failures are retryable up to
+        the bounded attempt cap."""
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        worker_id = str(a.get("worker_id") or f"worker-{int(time.time()) % 100000}")
+        intent = engagement_util.claim_intent(
+            target, worker_id, intent_id=str(a.get("intent_id") or "")
+        )
+        if not intent:
+            data = engagement_util.summary(target, limit=3)
+            return {"ok": False, "error": "no queued intent; call engagement intents first",
+                    "queued": (data.get("intents") or {}).get("queued", 0)}
+        iid = str(intent.get("id") or "")
+        engagement_util.start_intent(target, iid, worker_id)
+        if on_event:
+            on_event({"type": "engagement_intent", "status": "running", "worker": worker_id,
+                      "intent_id": iid, "text": str(intent.get("text") or "")[:240]})
+        actions = engagement_util.validate_actions(a.get("actions") or intent.get("actions"))
+        results: List[Dict[str, Any]] = []
+        evidence_refs: List[str] = []
+        ok = True
+        graph_target_tools = {"knowledge_graph", "evidence_log", "verify_findings",
+                              "attack_paths", "oracle_validate", "autonomous_route"}
+        for action in actions:
+            name = str(action.get("tool") or "")
+            subargs = dict(action.get("args") or {})
+            if name in graph_target_tools and not subargs.get("target"):
+                subargs["target"] = target
+            try:
+                raw = await self.run(name, subargs, emit=emit, on_event=on_event)
+            except Exception as exc:
+                raw = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+            parsed = None
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                pass
+            denied = isinstance(parsed, dict) and bool(parsed.get("denied") or parsed.get("blocked"))
+            step_ok = not denied and not (isinstance(parsed, dict) and bool(parsed.get("error")))
+            if denied:
+                ok = False
+            try:
+                entry = await asyncio.to_thread(
+                    evidence_util.record, target, tool=name, args=subargs, result=raw,
+                    ok=step_ok, source="engagement", tags=["worker", worker_id, iid],
+                )
+                if entry.get("id"):
+                    evidence_refs.append(str(entry["id"]))
+            except Exception:
+                entry = {}
+            # Write discovered assets/facts back into the world graph.
+            try:
+                _, delta = tool_parsers.compact_for_context(name, subargs, raw)
+                if delta:
+                    await asyncio.to_thread(tool_parsers.upsert_to_graph, target, delta, f"engagement:{name}")
+                    world = kg_util.query(target, limit=1)
+                    anchor = dict(intent.get("anchor") or {})
+                    for node in (world or [])[:1]:
+                        if node.get("key") and not anchor.get("node_key"):
+                            anchor["node_key"] = node.get("key")
+                    await asyncio.to_thread(
+                        work_graph_util.upsert_node, target, "intent", iid, {},
+                        status="running", owner=worker_id, anchors=[anchor] if anchor.get("node_key") else None,
+                        source=f"worker:{name}",
+                    )
+            except Exception:
+                pass
+            results.append({"tool": name, "ok": step_ok,
+                            "preview": str(raw or "")[:600]})
+        summary_text = " | ".join(f"{r['tool']}:{'ok' if r['ok'] else 'fail'}" for r in results)[:900]
+        completion = engagement_util.complete_intent(
+            target, iid, ok=ok, evidence_ref=evidence_refs[0] if evidence_refs else "",
+            summary=summary_text, worker_id=worker_id,
+        )
+        engagement_util.record_worker(
+            target, worker_id, role="worker", intent_id=iid, ok=ok, preview=summary_text,
+        )
+        payload = {
+            "ok": bool(ok), "target": target, "worker": worker_id, "intent_id": iid,
+            "status": completion.get("status"), "results": results,
+            "evidence_refs": evidence_refs,
+            "attempts": int(completion.get("intent", {}).get("attempts") or 0),
+        }
+        if on_event:
+            on_event({"type": "engagement_intent", "status": completion.get("status"),
+                      "worker": worker_id, "intent_id": iid,
+                      "preview": summary_text or str(completion.get("intent", {}).get("summary") or "")[:240]})
+        return payload
+
+    async def _run_verify_findings(self, args: Dict[str, Any]) -> Any:
+        """Retester: deterministic replay, stable-node updates, proof gate intact."""
+        a = args or {}
+        target = self._active_target(a)
+        if not target:
+            return {"error": "no target set; pass target or run /target <name>"}
+        action = str(a.get("action") or "list").strip().lower()
+        limit = _clamp_int(a.get("limit"), 1, 500, 200)
+        findings = kg_util.query(target, kind="finding", limit=limit)
         needle = str(a.get("finding") or "").lower().strip()
         if needle:
-            findings = [f for f in findings if needle in str(f.get("id","")).lower() or needle in str(f.get("key","")).lower() or needle in str((f.get("attrs") or {}).get("title","")).lower()]
+            findings = [
+                f for f in findings
+                if needle in str(f.get("id", "")).lower()
+                or needle in str(f.get("key", "")).lower()
+                or needle in str((f.get("attrs") or {}).get("title", "")).lower()
+            ]
         if action == "list":
             out = []
             for f in findings:
                 attrs = f.get("attrs") or {}
-                out.append({"id": f.get("id"), "key": f.get("key"), "title": attrs.get("title"), "status": attrs.get("status"), "severity": attrs.get("severity"), "repro_script": attrs.get("repro_script"), "repro_command": attrs.get("repro_command"), "evidence_ref": attrs.get("evidence_ref"), "last_replay_verdict": attrs.get("last_replay_verdict")})
+                out.append({
+                    "id": f.get("id"), "key": f.get("key"), "title": attrs.get("title"),
+                    "status": attrs.get("status"), "severity": attrs.get("severity"),
+                    "repro_script": attrs.get("repro_script") or attrs.get("poc_script"),
+                    "repro_command": attrs.get("repro_command") or attrs.get("poc_command"),
+                    "poc_steps": attrs.get("poc_steps") or [],
+                    "evidence_ref": attrs.get("evidence_ref") or attrs.get("poc_evidence_ref"),
+                    "last_replay_verdict": attrs.get("last_replay_verdict"),
+                    "last_retest_verdict": attrs.get("last_retest_verdict"),
+                    "retest_count": attrs.get("retest_count") or 0,
+                })
             return {"ok": True, "target": target, "findings": out}
-        if action == "save_repro":
+        if action in ("save_repro", "save_poc"):
             if not findings:
                 return {"ok": False, "error": "finding not found"}
             f = findings[0]
             attrs = dict(f.get("attrs") or {})
             content = str(a.get("content") or "")
-            kind = str(a.get("kind") or ("sh" if str(a.get("filename","")).endswith(".sh") else "py"))
+            kind = str(a.get("kind") or ("sh" if str(a.get("filename", "")).endswith(".sh") else "py"))
             if not content.strip():
                 return {"ok": False, "error": "content required"}
-            art = evidence_util.save_repro_artifact(target, str(f.get("id") or attrs.get("title") or "finding"), content, kind=kind)
+            finding_id = str(f.get("id") or attrs.get("title") or "finding")
+            art = evidence_util.save_repro_artifact(target, finding_id, content, kind=kind)
             if art.get("ok"):
                 attrs["repro_script"] = art.get("path")
+                attrs["poc_script"] = art.get("path")
                 attrs["repro_sha256"] = art.get("sha256")
-                kg_util.upsert_node(target, "finding", str(attrs.get("title") or f.get("id")), attrs, source="verify_findings")
-                evidence_util.record(target, tool="verify_findings", args={"action":"save_repro","finding":f.get("id")}, result=json.dumps(art), ok=True, source="verify_findings", tags=["repro","artifact"])
+                attrs["poc_sha256"] = art.get("sha256")
+                if a.get("command"):
+                    attrs["repro_command"] = str(a["command"])[:2000]
+                    attrs["poc_command"] = str(a["command"])[:2000]
+                if a.get("steps"):
+                    steps = a["steps"]
+                    attrs["poc_steps"] = [str(s) for s in (steps if isinstance(steps, list) else [steps])][:30]
+                # Stable key: never create a second node for the same finding.
+                node = kg_util.update_node_attrs(target, str(f.get("key") or ""), attrs, source="verify_findings")
+                evidence_util.record(
+                    target, tool="verify_findings", args={"action": action, "finding": finding_id},
+                    result=json.dumps(art, ensure_ascii=False), ok=True,
+                    source="verify_findings", tags=["repro", "poc", "artifact"],
+                )
+                art["node_key"] = (node or {}).get("key") or f.get("key")
             return art
-        if action in ("replay", "replay_all"):
-            selected = findings if action == "replay_all" else findings[:1]
+        if action == "retest_status":
+            data = engagement_util.load(target)
+            return {"ok": True, "target": target, "retests": data.get("retests", [])[-50:]}
+        if action in ("replay", "replay_all", "retest", "retest_all"):
+            all_findings = action in ("replay_all", "retest_all")
+            selected = findings if all_findings else findings[:1]
+            timeout = _clamp_int(a.get("timeout"), 5, 600, 120)
             results = []
             for f in selected:
+                key = str(f.get("key") or "")
                 attrs = dict(f.get("attrs") or {})
-                repro_script = str(attrs.get("repro_script") or "")
-                repro_cmd = str(attrs.get("repro_command") or "")
+                repro_script = str(attrs.get("repro_script") or attrs.get("poc_script") or "")
+                repro_cmd = str(attrs.get("repro_command") or attrs.get("poc_command") or "")
+                label = str(attrs.get("title") or f.get("id") or "finding")
                 if not repro_script and not repro_cmd:
-                    results.append({"finding": f.get("id"), "status": "skipped", "reason": "no repro_script/repro_command"})
+                    results.append({"finding": f.get("id"), "status": "skipped",
+                                    "reason": "no repro_script/repro_command or PoC recorded"})
                     continue
                 if repro_script:
-                    # run script path with bash/python based on suffix
                     p = Path(repro_script).expanduser()
-                    if not p.is_absolute(): p = (kg_util.target_dir(target) / repro_script).resolve()
+                    if not p.is_absolute():
+                        p = (kg_util.target_dir(target) / repro_script).resolve()
                     if not p.exists():
-                        results.append({"finding": f.get("id"), "status": "error", "reason": f"missing repro script: {p}"})
+                        results.append({"finding": f.get("id"), "status": "error",
+                                        "reason": f"missing PoC script: {p}"})
                         continue
                     cmd = ["/bin/bash", str(p)] if p.suffix == ".sh" else [sys.executable, str(p)]
                 else:
                     cmd = ["/bin/bash", "-lc", repro_cmd]
                 try:
-                    proc = await asyncio.create_subprocess_exec(*cmd, cwd=os.getcwd(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-                    out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=max(10, min(int(a.get("timeout", 120)), 600)))
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd, cwd=os.getcwd(), stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                     out = out_b.decode("utf-8", errors="replace")[-8000:]
-                    exit_code = proc.returncode
+                    exit_code = int(proc.returncode)
                 except Exception as exc:
-                    out = str(exc); exit_code = -1
-                verdict = "still_vulnerable" if exit_code == 0 else "fixed_or_not_reproduced"
-                # update finding node status attrs
+                    out = f"{type(exc).__name__}: {exc}"
+                    exit_code = -1
+                success = exit_code == 0
+                verdict = "still_reproducible" if success else "fixed"
+                entry = await asyncio.to_thread(
+                    evidence_util.record, target, tool="verify_findings",
+                    args={"action": action, "finding": f.get("id"), "key": key},
+                    result=out, ok=success, source="retester",
+                    tags=["retest", verdict],
+                )
+                evidence_ref = str(entry.get("id") or "")
+                attrs["poc_evidence_ref"] = evidence_ref
                 attrs["last_replay_exit"] = exit_code
                 attrs["last_replay_verdict"] = verdict
-                attrs["last_replay_at"] = time.time()
-                attrs["last_replay_output"] = out[:2000]
-                if verdict == "still_vulnerable":
+                attrs["last_retest_verdict"] = verdict
+                attrs["last_retest_at"] = time.time()
+                attrs["last_retest_output"] = out[:2000]
+                attrs["retest_count"] = int(attrs.get("retest_count") or 0) + 1
+                if success:
+                    # Proof gate: only proved when a replay evidence id exists.
                     attrs["status"] = "proved"
-                kg_util.upsert_node(target, "finding", str(attrs.get("title") or f.get("id")), attrs, source="verify_findings")
-                evidence_util.record(target, tool="verify_findings", args={"finding": f.get("id")}, result=out, ok=exit_code==0, source="verify_findings", tags=["replay", verdict])
-                results.append({"finding": f.get("id"), "title": attrs.get("title"), "exit_code": exit_code, "verdict": verdict, "output": out[:2000]})
-            return {"ok": True, "target": target, "results": results}
+                    attrs["evidence_ref"] = evidence_ref
+                else:
+                    attrs["status"] = "attempted"
+                node = kg_util.update_node_attrs(target, key, attrs, source="retester")
+                engagement_util.record_retest(
+                    target, label, verdict, evidence_ref=evidence_ref,
+                    output=out, exit_code=exit_code, timeout=timeout,
+                )
+                results.append({
+                    "finding": f.get("id"), "key": (node or {}).get("key") or key,
+                    "title": label, "exit_code": exit_code, "verdict": verdict,
+                    "evidence_ref": evidence_ref, "output": out[:2000],
+                })
+            return {"ok": True, "target": target, "action": action, "results": results}
         return {"error": f"unknown verify_findings action: {action}"}
 
     def _run_local(self, name: str, args: Dict[str, Any]) -> Any:
@@ -1689,6 +1985,16 @@ CORE REASONING & PENTEST LOGIC (when doing security/recon/analysis)
   context - keep it current. Evidence is auto-captured; add manual `evidence_log`
   entries for important observations. Use `blackboard` for shared Facts/Intents/Human Hints
   so subagents/operators can coordinate asynchronously.
+- Engagement loop (goals -> planner -> workers -> reporter -> retester): use `engagement`
+  to set goals with verifiable success criteria, emit short anchored intents and inspect
+  coverage. Two graphs are maintained: `graph.json` is the shared world/asset graph,
+  `work_graph.json` records what was tried and why, linked by anchors to world nodes.
+  Call `engagement_run` to claim ONE queued intent and execute its bounded real-tool
+  actions; each action passes hooks/permission gates and writes evidence back to both
+  graphs. Coverage is derived from completed anchors, not a decorative estimate. Delegate
+  `goal_decomposer`, `intent_planner`, `coverage_auditor`, `poc_builder`, `retest_reviewer`
+  for isolated planning/review; keep execution in `engagement_run`. Retest every reported
+  finding with `verify_findings retest` before calling it proved. Never delete prior state.
 - Adaptive hypothesis loop (enforced workflow): every probe is a hypothesis. After
   meaningful observations, call `planner_update` with action=observe and record
   `observed`, `hypothesis_delta`, and `next_action`. On failure/block (403, 401,

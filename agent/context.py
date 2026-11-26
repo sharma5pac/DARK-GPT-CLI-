@@ -232,6 +232,13 @@ def system_extras(
                         lines.append(f"- [{it.get('kind')}/{it.get('status')}] {str(it.get('text',''))[:120]}")
             except Exception:
                 pass
+            try:
+                from agent import engagement as eng
+                block = eng.context_block(target)
+                if block:
+                    lines.append(block)
+            except Exception:
+                pass
             parts.append("Target state (dynamic memory - update it as you learn):\n" + "\n".join(lines))
     except Exception:
         pass

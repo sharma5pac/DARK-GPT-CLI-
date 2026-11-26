@@ -115,6 +115,33 @@ def upsert_node(
     return node
 
 
+def update_node_attrs(target: str, key: str, attrs: Dict[str, Any], source: str = "") -> Optional[Dict[str, Any]]:
+    """Update an existing node by stable key (never create a duplicate node)."""
+    graph = _load(target)
+    node = graph["nodes"].get(str(key))
+    if not node:
+        return None
+    merged = dict(node.get("attrs") or {})
+    for k, v in (attrs or {}).items():
+        if v in (None, "", [], {}, ()):
+            continue
+        if isinstance(v, list) and isinstance(merged.get(k), list):
+            for item in v:
+                if item not in merged[k]:
+                    merged[k].append(item)
+            merged[k] = merged[k][-50:]
+        else:
+            merged[k] = v
+    node["attrs"] = merged
+    node["last_seen"] = _now()
+    if source and source not in node.get("sources", []):
+        node.setdefault("sources", []).append(source)
+        node["sources"] = node["sources"][-20:]
+    graph["nodes"][str(key)] = node
+    _save(target, graph)
+    return node
+
+
 def add_edge(target: str, src_key: str, dst_key: str, rel: str, *, created_by: str = "", evidence_id: str = "", confidence: Any = None, meta: Optional[Dict[str, Any]] = None) -> None:
     graph = _load(target)
     if src_key not in graph["nodes"] or dst_key not in graph["nodes"]:
