@@ -11,8 +11,9 @@ Skills are plain Markdown files with optional YAML-ish frontmatter::
     Instructions the model should follow while the skill is active.
 
 Search order: user skills first, then project skills. A project skill with the
-same name overrides the user one. Active state is persisted so a toggle survives
-a TUI restart.
+same name overrides the user one. Every discovered skill is active by default;
+only an explicit deactivation is persisted across TUI restarts. Full documents
+are loaded on demand via the `skills` tool so the system prompt stays compact.
 """
 
 from __future__ import annotations
@@ -124,6 +125,7 @@ class SkillRegistry:
             self.dirs.extend(Path(p) for p in extra_dirs)
         self._skills: Dict[str, Skill] = {}
         self._active: set[str] = set()
+        self._deactivated: set[str] = set()
         self.reload()
 
     # ---------------------------------------------------------------- loading
@@ -148,18 +150,27 @@ class SkillRegistry:
                 if skill.name:
                     found[skill.name] = skill  # later dirs (project) win
         self._skills = found
-        self._active = {n for n in self._load_state() if n in found}
+        # Every discovered skill is active by default. Only an explicit,
+        # persisted deactivation opts a skill out; new imports need no toggle.
+        state = self._load_state()
+        self._deactivated = {n for n in state.get("deactivated", []) if n in found}
+        self._active = set(found) - self._deactivated
 
-    def _load_state(self) -> List[str]:
+    def _load_state(self) -> Dict[str, Any]:
         try:
             data = json.loads(STATE_PATH.read_text())
-            return [str(x) for x in data.get("active", [])]
+            if isinstance(data, dict):
+                return data
         except Exception:
-            return []
+            pass
+        return {}
 
     def _save_state(self) -> None:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps({"active": sorted(self._active)}, indent=2))
+        STATE_PATH.write_text(json.dumps({
+            "active": sorted(self._active),
+            "deactivated": sorted(self._deactivated),
+        }, indent=2))
 
     # ------------------------------------------------------------------- query
     def all(self) -> List[Skill]:
@@ -181,7 +192,39 @@ class SkillRegistry:
         skills = self.active()
         if not skills:
             return ""
-        return "\n\n".join(s.render() for s in skills)
+        if len(skills) <= 12:
+            return "\n\n".join(s.render() for s in skills)
+        # With the full library active, inlining every document would consume
+        # millions of characters. Publish a compact catalog instead; the
+        # `skills` tool loads full instructions on demand by exact name.
+        master = next((s for s in skills if s.name == "hack"), None)
+        lines = [
+            f"ALL {len(skills)} DISCOVERED SKILLS ARE ACTIVE (unless explicitly deactivated).",
+            "Use the `skills` tool with an exact name below to load its full instructions "
+            "before applying it. Never guess a skill's contents.",
+            "Skill catalog (name: description):",
+        ]
+        budget = 40000
+        for skill in skills:
+            if master is not None and skill.name == master.name:
+                continue
+            desc = re.sub(r"\s+", " ", skill.description).strip()[:110]
+            tools = f" [tools: {', '.join(skill.tools[:6])}]" if skill.tools else ""
+            line = f"- {skill.name}: {desc}{tools}"[:220]
+            lines.append(line)
+            budget -= len(line)
+            if budget <= 0:
+                lines.append("... catalog truncated; use `skills` for any name not listed.")
+                break
+        catalog = "\n".join(lines)
+        return master.render() + "\n\n" + catalog if master is not None else catalog
+
+    def activate_all(self) -> int:
+        """Activate every discovered skill and clear explicit opt-outs."""
+        self._active = set(self._skills)
+        self._deactivated.clear()
+        self._save_state()
+        return len(self._active)
 
     # ------------------------------------------------------------------ mutate
     def toggle(self, name: str) -> bool:
@@ -189,9 +232,11 @@ class SkillRegistry:
             return False
         if name in self._active:
             self._active.discard(name)
+            self._deactivated.add(name)
             state = False
         else:
             self._active.add(name)
+            self._deactivated.discard(name)
             state = True
         self._save_state()
         return state
@@ -201,8 +246,10 @@ class SkillRegistry:
             return
         if active:
             self._active.add(name)
+            self._deactivated.discard(name)
         else:
             self._active.discard(name)
+            self._deactivated.add(name)
         self._save_state()
 
     # ------------------------------------------------------------- file writes
