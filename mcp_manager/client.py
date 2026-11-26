@@ -24,6 +24,8 @@ except NameError:  # pragma: no cover
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from utils import agentic_guard, appconfig
+
 try:
     from mcp.client.sse import sse_client
 except Exception:  # pragma: no cover
@@ -67,6 +69,8 @@ class MCPServerState:
     tools: List[MCPTool] = field(default_factory=list)
     resources: List[str] = field(default_factory=list)
     prompts: List[str] = field(default_factory=list)
+    guard_findings: List[Dict[str, Any]] = field(default_factory=list)
+    quarantined: List[str] = field(default_factory=list)
     session: Optional[ClientSession] = None
     log_path: str = ""
     _task: Optional[asyncio.Task] = None
@@ -122,6 +126,8 @@ class MCPManager:
         state.tools = []
         state.resources = []
         state.prompts = []
+        state.guard_findings = []
+        state.quarantined = []
         if not quiet:
             state.status = "disconnected"
             state.error = ""
@@ -272,19 +278,43 @@ class MCPManager:
     async def _refresh_meta(self, state: MCPServerState) -> None:
         assert state.session is not None
         tools = await state.session.list_tools()
-        state.tools = [
-            MCPTool(
-                server=state.name,
-                name=t.name,
-                description=t.description or "",
-                input_schema=(
-                    getattr(t, "input_schema", None)
-                    or getattr(t, "inputSchema", None)
-                    or {"type": "object", "properties": {}}
-                ),
+        state.tools = []
+        state.guard_findings = []
+        state.quarantined = []
+        quarantine = bool(appconfig.get("mcp_poison_quarantine", True))
+        for tool in tools.tools:
+            raw_schema = (
+                getattr(tool, "input_schema", None)
+                or getattr(tool, "inputSchema", None)
+                or {"type": "object", "properties": {}}
             )
-            for t in tools.tools
-        ]
+            # MCP spec alignment: every OpenAI-style tool schema must be an
+            # object with a properties map, even for zero-argument tools.
+            schema = dict(raw_schema) if isinstance(raw_schema, dict) else {}
+            if schema.get("type") != "object":
+                schema["type"] = "object"
+            if not isinstance(schema.get("properties"), dict):
+                schema["properties"] = {}
+            item: MCPTool = MCPTool(
+                server=state.name,
+                name=str(tool.name or ""),
+                description=str(tool.description or ""),
+                input_schema=schema,
+            )
+            findings = agentic_guard.scan_tool_spec(
+                {"type": "function", "function": {
+                    "name": item.name,
+                    "description": item.description,
+                    "parameters": item.input_schema,
+                }},
+                source=state.name,
+            )
+            if findings:
+                state.guard_findings.extend(findings)
+                if quarantine and agentic_guard.is_poisoned(findings):
+                    state.quarantined.append(item.name)
+                    continue
+            state.tools.append(item)
         state.resources = []
         state.prompts = []
         with contextlib.suppress(Exception):
@@ -307,6 +337,8 @@ class MCPManager:
             if state.name in disabled_servers:
                 continue
             for tool in state.tools:
+                if tool.name in state.quarantined:
+                    continue
                 if tool.qualified in disabled or tool.display in disabled:
                     continue
                 out.append(tool)
@@ -346,11 +378,22 @@ class MCPManager:
                     "tools": state.tool_count,
                     "resources": len(state.resources),
                     "prompts": len(state.prompts),
+                    "quarantined": list(state.quarantined),
+                    "guard_findings": len(state.guard_findings),
                     "error": state.error,
                     "log": state.log_path,
                 }
             )
         return rows
+
+    def guard_summary(self) -> Dict[str, Any]:
+        findings: List[Dict[str, Any]] = []
+        quarantined: Dict[str, List[str]] = {}
+        for name, state in self.servers.items():
+            findings.extend(state.guard_findings)
+            if state.quarantined:
+                quarantined[name] = list(state.quarantined)
+        return {"findings": findings, "quarantined": quarantined}
 
     def status_lines(self) -> List[str]:
         lines = []
@@ -358,6 +401,8 @@ class MCPManager:
             extra = f" {row['tools']} tools" if row["status"] == "connected" else (
                 f" {row['error']}" if row["error"] else ""
             )
+            if row["quarantined"]:
+                extra += f" | quarantined: {len(row['quarantined'])}"
             lines.append(f"{row['name']}: {row['status']}{extra}")
         return lines or ["no mcp servers configured"]
 

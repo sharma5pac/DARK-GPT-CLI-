@@ -32,12 +32,18 @@ from utils.get_response import (
     OpenRouterError,
     auth_headers,
     chat_url,
+    current_provider,
+    failover_chain,
+    failover_history,
+    format_failover_notice,
+    is_failover_error,
     parse_error_response,
     post_with_retry,
     provider_config,
+    record_failover,
 )
 from utils.search import SearchError, format_results, web_search
-from utils import appconfig, hooks, permissions, scripting, undo, vcs, verify
+from utils import agentic_guard, appconfig, hooks, permissions, scripting, undo, vcs, verify
 from agent import (
     autonomous,
     browser,
@@ -51,11 +57,15 @@ from agent import (
     memory as memory_util,
     reporting as reporting_util,
     review as review_util,
+    replay as replay_util,
     routing,
+    semantic_memory as semantic_util,
+    advisor as advisor_util,
     skills as skills_util,
     subagents,
     tool_discovery,
     tool_parsers,
+    tool_search as tool_search_util,
     auth_vault,
     source_correlation,
     proxy as proxy_util,
@@ -303,6 +313,7 @@ class ToolRegistry:
         self.hooks_enabled = hooks_enabled
         self.skills = skills
         self.ask_callback = ask_callback
+        self.tool_index: Optional[tool_search_util.ToolIndex] = None
         self.approved: set[str] = set()
         self.jobs = JobManager()
         self.proxy = proxy_util.ProxyManager()
@@ -366,16 +377,31 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "verify_findings", "description": "Deterministic replay verification for findings with repro artifacts. Runs stored repro scripts/commands in controlled mode and marks findings still_vulnerable/fixed/error. Actions: list,save_repro,replay,replay_all.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "save_repro", "replay", "replay_all"]}, "target": {"type": "string"}, "finding": {"type": "string", "description": "Finding id/title/key fragment"}, "content": {"type": "string", "description": "For save_repro: script content"}, "kind": {"type": "string", "enum": ["py", "sh"]}, "limit": {"type": "integer"}, "timeout": {"type": "integer"}}, "required": ["action"]}}},
         ]
 
-    def specs(self) -> List[Dict[str, Any]]:
+    def all_specs(self) -> List[Dict[str, Any]]:
+        """Complete catalog (built-ins + MCP), before deferred-schema filtering."""
         lsp_on = bool(appconfig.get("lsp_enabled", True))
         scripts_on = bool(appconfig.get("scripts_enabled", True))
-        specs = [
-            s for s in self.local_specs()
-            if s["function"]["name"] not in self.disabled
-            and (lsp_on or not s["function"]["name"].startswith("lsp_"))
-            and (self.subagents is not None or s["function"]["name"] not in ("delegate", "spawn_agent"))
-            and (scripts_on or s["function"]["name"] != "script")
-        ]
+
+        def enabled(spec: Dict[str, Any]) -> bool:
+            name = spec["function"]["name"]
+            if name in self.disabled:
+                return False
+            if not lsp_on and name.startswith("lsp_"):
+                return False
+            if self.subagents is None and name in ("delegate", "spawn_agent"):
+                return False
+            if not scripts_on and name == "script":
+                return False
+            return True
+
+        specs = [s for s in self.local_specs() if enabled(s)]
+        specs.extend(
+            s for s in (
+                semantic_util.tool_specs()
+                + [advisor_util.tool_spec(), agentic_guard.tool_spec(), replay_util.tool_spec()]
+            )
+            if enabled(s)
+        )
         if self.mcp:
             specs.extend(
                 self.mcp.openai_tools(
@@ -383,7 +409,23 @@ class ToolRegistry:
                     disabled_servers=self.disabled_servers,
                 )
             )
+        search_spec = tool_search_util.search_tool_spec(
+            int(appconfig.get("tool_search_top_k", 6) or 6)
+        )
+        if search_spec["function"]["name"] not in self.disabled:
+            specs.append(search_spec)
         return specs
+
+    def specs(self) -> List[Dict[str, Any]]:
+        """Schemas advertised this turn: always-on + explicitly loaded tools."""
+        all_specs = self.all_specs()
+        signature = "|".join(s["function"]["name"] for s in all_specs)
+        if self.tool_index is None or getattr(self, "_spec_signature", "") != signature:
+            self.tool_index = tool_search_util.current_index(all_specs)
+            self._spec_signature = signature
+        active, self.tool_index = tool_search_util.build_active_specs(all_specs, self.tool_index)
+        tool_search_util.set_index(self.tool_index)
+        return active
 
     @staticmethod
     def display_name(name: str) -> str:
@@ -517,7 +559,7 @@ class ToolRegistry:
                 ranked = tool_discovery.rank_tools(
                     objective,
                     found,
-                    mcp_tool_names=[s["function"]["name"] for s in self.specs()],
+                    mcp_tool_names=[s["function"]["name"] for s in self.all_specs()],
                     limit=limit,
                 )
                 return clamp(json.dumps({
@@ -529,7 +571,7 @@ class ToolRegistry:
                     "summary": tool_discovery.inventory_summary(ranked),
                 }, ensure_ascii=False))
             if name == "autonomous_route":
-                specs = self.specs()
+                specs = self.all_specs()
                 payload = await asyncio.to_thread(
                     autonomous.run,
                     str(args.get("objective") or ""),
@@ -586,6 +628,100 @@ class ToolRegistry:
                 return clamp(json.dumps(await asyncio.to_thread(self._run_attack_paths, args), ensure_ascii=False))
             if name == "verify_findings":
                 return clamp(json.dumps(await self._run_verify_findings(args), ensure_ascii=False))
+            if name == "tool_search":
+                index = self.tool_index or tool_search_util.current_index(self.all_specs())
+                limit = _clamp_int(
+                    args.get("limit") or appconfig.get("tool_search_top_k", 6), 1, 12, 6
+                )
+                skip_loaded = bool(args.get("include_deferred_only", True))
+                results = index.search(str(args.get("query") or ""), limit=limit, skip_loaded=skip_loaded)
+                loaded = index.load([r.get("name") for r in results])
+                tool_search_util.set_index(index)
+                if on_event and loaded:
+                    on_event({"type": "tool_index_loaded", "loaded": loaded, "total": len(index.loaded)})
+                return clamp(tool_search_util.format_search_results(str(args.get("query") or ""), results, index))
+            if name == "semantic_recall":
+                entries = await asyncio.to_thread(
+                    semantic_util.recall,
+                    str(args.get("query") or ""),
+                    _clamp_int(args.get("limit") or appconfig.get("semantic_recall_k", 5), 1, 20, 5),
+                    target=str(args.get("target") or ""),
+                )
+                return clamp(json.dumps({
+                    "ok": True,
+                    "count": len(entries),
+                    "memories": entries,
+                    "text": semantic_util.format_memories(entries),
+                }, ensure_ascii=False))
+            if name == "semantic_remember":
+                entry = await asyncio.to_thread(
+                    semantic_util.remember,
+                    str(args.get("text") or ""),
+                    str(args.get("kind") or "note"),
+                    tags=list(args.get("tags") or []),
+                    source="agent",
+                    target=str(args.get("target") or appconfig.get("active_target") or ""),
+                    cwd=os.getcwd(),
+                    importance=float(args.get("importance") or 0.5),
+                )
+                return clamp(json.dumps({"ok": bool(entry), "entry": entry}, ensure_ascii=False))
+            if name == "consult_advisor":
+                result = await advisor_util.consult_async(
+                    question=str(args.get("question") or ""),
+                    context=str(args.get("context") or ""),
+                    point=str(args.get("point") or "pivot"),
+                    timeout=int(args.get("timeout") or appconfig.get("advisor_timeout", 25) or 25),
+                )
+                advisor_util.remember_advice(result)
+                if on_event:
+                    on_event({
+                        "type": "advisor", "point": result.get("point"),
+                        "ok": bool(result.get("ok")), "advice": str(result.get("advice") or ""),
+                        "error": str(result.get("error") or ""),
+                        "provider": result.get("provider"), "model": result.get("model"),
+                    })
+                return clamp(json.dumps(result, ensure_ascii=False))
+            if name == "guard_status":
+                manager_summary = {}
+                if self.mcp and hasattr(self.mcp, "guard_summary"):
+                    try:
+                        manager_summary = self.mcp.guard_summary()
+                    except Exception:
+                        manager_summary = {}
+                findings = list(manager_summary.get("findings") or []) + agentic_guard.recent_findings(
+                    _clamp_int(args.get("findings"), 1, 200, 20)
+                )
+                summary = agentic_guard.format_findings(findings)
+                if manager_summary.get("quarantined"):
+                    summary += "\nQuarantined MCP tools: " + json.dumps(manager_summary["quarantined"], ensure_ascii=False)
+                return clamp(json.dumps({
+                    "ok": True, "mode": agentic_guard.mode(), "findings": findings, "text": summary,
+                }, ensure_ascii=False))
+            if name == "replay_run":
+                action = str(args.get("action") or "status").strip().lower()
+                if action == "status":
+                    payload = {"ok": True, "lines": replay_util.status_lines()}
+                elif action == "list":
+                    payload = {"ok": True, "flows": replay_util.list_flows(_clamp_int(args.get("limit"), 1, 100, 12))}
+                elif action == "capture":
+                    label = replay_util.start_capture(str(args.get("name") or ""))
+                    payload = {"ok": True, "capturing": label, "hint": "Run the GUI steps, then replay_run save <name>."}
+                elif action == "save":
+                    payload = replay_util.save(
+                        str(args.get("name") or ""), args.get("steps"),
+                        verify=str(args.get("verify") or ""), tags=list(args.get("tags") or []),
+                    )
+                elif action in ("run", "verify"):
+                    payload = await replay_util.run(
+                        self.mcp, str(args.get("name") or ""),
+                        verify_only=action == "verify",
+                        timeout=_clamp_int(args.get("timeout"), 2, 120, 20),
+                    )
+                else:
+                    payload = {"ok": False, "error": f"unknown replay_run action: {action}"}
+                if on_event:
+                    on_event({"type": "replay", "action": action, "ok": bool(payload.get("ok")), "preview": str(payload.get("error") or payload.get("verdict") or "")[:240]})
+                return clamp(json.dumps(payload, ensure_ascii=False))
             if name.startswith("mcp__"):
                 _, server, tool = name.split("__", 2)
                 if not self.mcp:
@@ -597,8 +733,15 @@ class ToolRegistry:
                     for c in content:
                         txt = getattr(c, "text", None)
                         parts.append(txt if txt is not None else str(c))
-                    return clamp("\n".join(parts))
-                return clamp(json.dumps(content, ensure_ascii=False, default=str))
+                    rendered = clamp("\n".join(parts))
+                else:
+                    rendered = clamp(json.dumps(content, ensure_ascii=False, default=str))
+                try:
+                    if replay_util.enabled():
+                        replay_util.capture(f"{server}__{tool}", args, rendered)
+                except Exception:
+                    pass
+                return rendered
             if name == "shell" and emit is not None:
                 return await self._run_shell_stream(args, emit)
             if name == "script" and emit is not None:
@@ -1613,18 +1756,18 @@ Available tools: {tool_names}
 """
 
 
-def _headers() -> Dict[str, str]:
+def _headers(provider: Optional[str] = None) -> Dict[str, str]:
     # Provider-aware: resolves the key for OpenRouter or NVIDIA NIM from the
     # active provider in config (and env/.env), with an actionable error.
-    return auth_headers()
+    return auth_headers(provider=provider or None)
 
 
-def _stream_request(payload: Dict[str, Any], timeout: int = 180):
+def _stream_request(payload: Dict[str, Any], timeout: int = 180, provider: Optional[str] = None):
     """Yield ``(perf_counter_timestamp, parsed_sse_object)`` tuples."""
     try:
         response = post_with_retry(
-            chat_url(),
-            headers=_headers(),
+            chat_url(provider) if provider else chat_url(),
+            headers=_headers(provider),
             payload=payload,
             timeout=(10, timeout),
             stream=True,
@@ -1656,13 +1799,13 @@ def _stream_request(payload: Dict[str, Any], timeout: int = 180):
         response.close()
 
 
-async def _astream(payload: Dict[str, Any], timeout: int = 180):
+async def _astream(payload: Dict[str, Any], timeout: int = 180, provider: Optional[str] = None):
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
     def pump() -> None:
         try:
-            for item in _stream_request(payload, timeout=timeout):
+            for item in _stream_request(payload, timeout=timeout, provider=provider):
                 loop.call_soon_threadsafe(queue.put_nowait, ("item", item))
             loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
         except BaseException as exc:  # noqa: BLE001
@@ -1788,6 +1931,21 @@ async def _execute_tool(
                 llm_result = compacted
         except Exception:
             parsed_delta = None
+        # OWASP agentic hardening: untrusted tool/browser/MCP output is treated
+        # as data. ``warn`` adds a banner; ``enforce`` also redacts obvious
+        # instruction overrides. Internal guard/status tools are exempt so
+        # their own finding previews cannot recursively trigger detection.
+        if name not in ("guard_status", "replay_run", "tool_search"):
+            llm_result, guard_findings = agentic_guard.guard_output(
+                llm_result, source=f"tool:{name}", tool_name=name
+            )
+            if guard_findings:
+                high = sum(1 for f in guard_findings if f.get("severity") == "high")
+                yield {
+                    "type": "guard", "tool": name, "count": len(guard_findings),
+                    "high": high, "mode": agentic_guard.mode(),
+                    "names": [str(f.get("name") or "") for f in guard_findings[:6]],
+                }
         if _target and name not in ("evidence_log",):
             artifact = {"parsed_delta": parsed_delta} if parsed_delta else None
             await asyncio.to_thread(
@@ -1869,6 +2027,8 @@ async def run_agent(
     enable_review: Optional[bool] = None,
     enable_worktree: Optional[bool] = None,
     enable_subagents: Optional[bool] = None,
+    enable_semantic_memory: Optional[bool] = None,
+    enable_advisor: Optional[bool] = None,
     permission_mode: Optional[str] = None,
     permission_callback=None,
     hooks_enabled: Optional[bool] = None,
@@ -1891,6 +2051,10 @@ async def run_agent(
         enable_worktree = bool(appconfig.get("worktree_enabled", True))
     if enable_subagents is None:
         enable_subagents = bool(appconfig.get("subagents_enabled", True))
+    if enable_semantic_memory is None:
+        enable_semantic_memory = bool(appconfig.get("semantic_memory_enabled", True))
+    if enable_advisor is None:
+        enable_advisor = bool(advisor_util.enabled())
     if permission_mode is None:
         permission_mode = str(appconfig.get("permission_mode") or "full")
     if hooks_enabled is None:
@@ -1932,6 +2096,20 @@ async def run_agent(
                 {"tool": name},
             )
 
+    def _advisor_spawn(point: str, question: str, context: str = "") -> None:
+        """Fire-and-forget strategic advice in a worker thread, never blocking the turn."""
+        if not enable_advisor or not advisor_util.wanted(point):
+            return
+
+        def worker() -> None:
+            try:
+                result = advisor_util.consult(question=question, context=context, point=point)
+                advisor_util.remember_advice(result)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="darkgpt-advisor").start()
+
     pool = None
     if enable_subagents:
         pool = subagents.SubagentPool(
@@ -1955,18 +2133,44 @@ async def run_agent(
     tools = registry.specs()
     tool_names = ", ".join(t["function"]["name"] for t in tools)
     schemas = {t["function"]["name"]: t["function"].get("parameters") for t in tools}
+    # Validation uses the complete catalog so a tool loaded via tool_search is
+    # immediately callable on the next turn, while ``schemas`` tracks what is
+    # actually advertised right now.
+    all_schemas = {t["function"]["name"]: t["function"].get("parameters") for t in registry.all_specs()}
     tools_used = 0
 
     system = SYSTEM.format(cwd=cwd)
+    if tool_search_util.deferral_enabled():
+        system += (
+            "\n\nTOOL CATALOG: use `tool_search` to load full schemas for any tool not listed in "
+            "this request (all 361 MCP tools are searchable). Repeated searches are cheap; guessing "
+            "an unloaded tool name is not. Deferred tools stay loaded for this session until "
+            "/tools-reset."
+        )
+    if enable_semantic_memory:
+        system += (
+            "\n\nSEMANTIC MEMORY: prior cross-session observations are injected above. Treat them "
+            "as hypotheses to verify, not as proof. Call `semantic_remember` for durable lessons "
+            "and `semantic_recall` before repeating work."
+        )
     if skills_instructions.strip():
         system += "\n\n# Active skills (follow these instructions)\n" + skills_instructions.strip() + "\n"
     extras = context_util.system_extras(
         cwd, prompt,
         memory=bool(enable_memory),
         self_learning=bool(enable_self_learning),
+        semantic_memory=bool(enable_semantic_memory),
     )
     if extras:
         system += "\n\n" + extras
+    if enable_advisor:
+        try:
+            advice_block = advisor_util.context_block()
+            if advice_block:
+                system += "\n\n" + advice_block
+        except Exception:
+            pass
+        _advisor_spawn("start", f"Goal: {prompt[:1500]}", context=f"cwd: {cwd}")
     try:
         # First-launch inventory is cached on disk; loading it into context is
         # cheap and gives the model real machine capabilities before it acts.
@@ -2074,6 +2278,11 @@ async def run_agent(
             return {"type": "redirect", "message": hint}
 
         if repeat_count >= MAX_REPEAT_CALLS:
+            _advisor_spawn(
+                "pivot",
+                f"{display} failed {MAX_REPEAT_CALLS} identical attempts. What should replace this dead end?",
+                context=f"prompt: {prompt[:1200]}\nlast result: {repeat_last_preview[:600]}",
+            )
             if repeat_last_kind in ("error", "empty"):
                 detail = repeat_last_preview or "the tool returned no usable data"
                 return {
@@ -2153,10 +2362,40 @@ async def run_agent(
 
     submitted: Optional[Dict[str, Any]] = None
 
+    # Provider auto-failover: a 429/daily-limit/budget failure moves to a
+    # different configured backend/model. It never reuses the same quota and
+    # never echoes response bodies or keys into the conversation.
+    active_model = model
+    active_provider = current_provider()
+    failover_routes = failover_chain(
+        active_provider, active_model,
+        max_routes=int(appconfig.get("failover_max_routes", 3) or 3),
+    )
+    failover_index = 0
+
+    def _emit_failover(exc: BaseException) -> bool:
+        """Switch to the next alternate route; False means no route remains."""
+        nonlocal active_model, active_provider, failover_index
+        if failover_index >= len(failover_routes):
+            return False
+        route = failover_routes[failover_index]
+        failover_index += 1
+        active_provider = str(route.get("provider") or active_provider)
+        active_model = str(route.get("model") or active_model)
+        record_failover(exc, route)
+        yield_notice = format_failover_notice(exc, route)
+        # Emitted through the generator's event stream via the closure below.
+        _pending_events.append({"type": "failover", "message": yield_notice, "route": route})
+        return True
+
+    _pending_events: List[Dict[str, Any]] = []
+
     max_steps = int(appconfig.get("max_steps", DEFAULT_MAX_STEPS) or DEFAULT_MAX_STEPS)
     tools_per_turn = int(appconfig.get("tools_per_turn", DEFAULT_TOOLS_PER_TURN) or DEFAULT_TOOLS_PER_TURN)
     tools_per_turn = max(10, min(tools_per_turn, 200))
     for _step in range(max_steps):
+        while _pending_events:
+            yield _pending_events.pop(0)
         if _step == max_steps - 4:
             messages.append({
                 "role": "user",
@@ -2167,7 +2406,7 @@ async def run_agent(
                 "role": "user",
                 "content": f"SYSTEM NUDGE: You have used {tools_used}/{tools_per_turn} tool calls this turn. Prioritize high-value actions, avoid repeats, and be ready to summarize verified findings if budget runs out.",
             })
-        payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": True}
+        payload: Dict[str, Any] = {"model": active_model, "messages": messages, "stream": True}
         if native_supported and active_tools:
             payload["tools"] = active_tools
             if relaxed_native:
@@ -2196,7 +2435,7 @@ async def run_agent(
         react_content_start: Optional[float] = None
 
         try:
-            async for ts, obj in _astream(payload):
+            async for ts, obj in _astream(payload, provider=active_provider):
                 if first_byte is None:
                     first_byte = ts
                     yield {
@@ -2325,8 +2564,11 @@ async def run_agent(
             message = exc.message or str(exc)
             elapsed = time.perf_counter() - request_started
             if exc.is_budget or exc.is_rate_limit:
-                # Deterministic stop: never retry, never enter ReAct, never loop tools.
                 yield {"type": "phase", "phase": "connecting", "state": "error", "duration": elapsed}
+                # Move to a different backend/model rather than hammering the
+                # exhausted quota. No alternate route means a clean stop.
+                if is_failover_error(exc) and _emit_failover(exc):
+                    continue
                 yield {
                     "type": "error",
                     "message": message,
@@ -2397,7 +2639,7 @@ async def run_agent(
                     args = json.loads(raw) if isinstance(raw, str) else (raw or {})
                 except Exception:
                     args = {"_raw": raw}
-                problem = validate_tool_args(name, args, schemas.get(name))
+                problem = validate_tool_args(name, args, all_schemas.get(name) or schemas.get(name))
                 if problem is None and tools_used >= tools_per_turn:
                     messages.append({
                         "role": "tool",
@@ -2408,6 +2650,11 @@ async def run_agent(
                         "role": "user",
                         "content": f"Tool budget reached ({tools_per_turn} calls). Do not request more tools. Return the best verified answer now, including what worked, what failed, evidence refs, and next pivot.",
                     })
+                    _advisor_spawn(
+                        "report",
+                        "Summarize the strongest verified findings and the best next pivot for the final report.",
+                        context=f"prompt: {prompt[:1200]}\ntools used: {tools_used}",
+                    )
                     yield {"type": "notice", "message": f"Tool budget reached ({tools_per_turn}); requesting final summary."}
                     budget_hit = True
                     break
@@ -2494,12 +2741,17 @@ async def run_agent(
                 name = tc["name"]
                 args = tc.get("arguments") or {}
                 budget_hit = False
-                problem = validate_tool_args(name, args, schemas.get(name))
+                problem = validate_tool_args(name, args, all_schemas.get(name) or schemas.get(name))
                 if problem is None and tools_used >= tools_per_turn:
                     messages.append({
                         "role": "user",
                         "content": f"Tool budget reached ({tools_per_turn} calls). Do not request more tools. Return the best verified answer now, including what worked, what failed, evidence refs, and next pivot.",
                     })
+                    _advisor_spawn(
+                        "report",
+                        "Summarize the strongest verified findings and the best next pivot for the final report.",
+                        context=f"prompt: {prompt[:1200]}\ntools used: {tools_used}",
+                    )
                     yield {"type": "notice", "message": f"Tool budget reached ({tools_per_turn}); requesting final summary."}
                     continue
                 if problem is not None:

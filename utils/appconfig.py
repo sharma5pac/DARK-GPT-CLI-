@@ -33,6 +33,32 @@ DEFAULTS: Dict[str, Any] = {
     "scripts_enabled": True,
     "allow_react_fallback": True,
     "cheap_model": "",
+    # Deferred tool loading: advertise a small always-on set plus tool_search.
+    "deferred_tools_enabled": True,
+    "tool_search_top_k": 6,
+    # Cross-session semantic memory.
+    "semantic_memory_enabled": True,
+    "semantic_recall_k": 5,
+    # Strategic advisor runs out-of-band at decision points. Off by default so
+    # the fast executor never pays for a second model unless the user opts in.
+    "advisor_enabled": False,
+    "advisor_points": ["pivot"],
+    "advisor_model": "",
+    "advisor_timeout": 25,
+    # OWASP agentic hardening: warn annotates untrusted output; enforce also
+    # redacts high-confidence injections and quarantines poisoned MCP tools.
+    "agentic_guard_mode": "warn",
+    "mcp_poison_quarantine": True,
+    # GUI replay / action verification.
+    "replay_enabled": True,
+    "replay_auto_verify": True,
+    "replay_max_steps": 40,
+    # Provider auto-failover. Never bypasses a quota by reusing the same
+    # provider/route; it moves to a different configured backend/model.
+    "failover_enabled": True,
+    "failover_max_routes": 3,
+    "failover_providers": ["nvidia", "openrouter"],
+    "failover_models": [],
 }
 
 
@@ -51,6 +77,12 @@ def load_config() -> Dict[str, Any]:
         data["disabled_servers"] = []
     if not isinstance(data.get("active_skills"), list):
         data["active_skills"] = []
+    for key in ("advisor_points", "failover_providers", "failover_models"):
+        value = data.get(key)
+        if isinstance(value, str):
+            data[key] = [p.strip() for p in value.split(",") if p.strip()]
+        elif not isinstance(value, list):
+            data[key] = list(DEFAULTS.get(key) or [])
     return data
 
 

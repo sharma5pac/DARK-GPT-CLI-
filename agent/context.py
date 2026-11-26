@@ -134,6 +134,7 @@ def system_extras(
     git: bool = True,
     memory: bool = True,
     self_learning: bool = True,
+    semantic_memory: bool = True,
 ) -> str:
     """Build the git + memory block that should be prepended to the system prompt."""
     parts: List[str] = []
@@ -170,6 +171,15 @@ def system_extras(
         patterns = mem.format_patterns(mem.by_kind(cwd, {"pattern"}, k=6))
         if patterns:
             parts.append(patterns)
+    if semantic_memory:
+        try:
+            from agent import semantic_memory as semantic_util
+
+            block = semantic_util.context_block(prompt)
+            if block:
+                parts.append(block)
+        except Exception:
+            pass
     # User-confirmed authorization carries across new chats. This is positive
     # carry-over state, not a gate: it prevents re-asking permission and stops
     # the agent from answering an attack order with a capability list.

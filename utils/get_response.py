@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Dict, Iterator, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -461,6 +462,209 @@ def auth_headers(explicit: Optional[str] = None, provider: Optional[str] = None)
         headers["HTTP-Referer"] = APP_REFERER
         headers["X-Title"] = APP_TITLE
     return headers
+
+
+# --------------------------------------------------------------------------
+# Provider auto-failover
+# --------------------------------------------------------------------------
+FAILOVER_ROOT = Path.home() / ".config" / "darkgpt"
+FAILOVER_LOG = FAILOVER_ROOT / "failover.jsonl"
+
+
+def failover_enabled() -> bool:
+    try:
+        from utils import appconfig
+
+        return bool(appconfig.get("failover_enabled", True))
+    except Exception:
+        return True
+
+
+def _failover_config_models() -> List[str]:
+    try:
+        from utils import appconfig
+
+        raw = appconfig.get("failover_models", []) or []
+        if isinstance(raw, str):
+            raw = [p.strip() for p in raw.split(",") if p.strip()]
+        return [str(m).strip() for m in raw if str(m).strip()]
+    except Exception:
+        return []
+
+
+def _model_candidates(provider: str, current_provider: str = "", current_model: str = "") -> List[str]:
+    """Free/chat models for a backend; never includes paid uncensored routes."""
+    try:
+        from utils import appconfig
+
+        cfg = appconfig.load_config()
+    except Exception:
+        cfg = {}
+    if provider == "nvidia":
+        configured = str(cfg.get("model_nvidia") or "").strip()
+        if current_provider == "nvidia" and not configured:
+            configured = str(current_model or "").strip()
+        candidates = [configured] + list(FALLBACK_NVIDIA_MODELS)
+    else:
+        configured = str(cfg.get("model_openrouter") or cfg.get("model") or "").strip()
+        if current_provider == "openrouter" and not configured:
+            configured = str(current_model or "").strip()
+        # Prefer the known-good free NVIDIA route on OpenRouter, then the
+        # cached/dynamic free catalogue's generic auto-router.
+        candidates = ["nvidia/nemotron-3.5-lightning:free", "openrouter/free"] + list(FALLBACK_FREE_MODELS)
+        if configured and configured not in UNCENSORED_MODEL_IDS:
+            candidates.insert(0, configured)
+    out: List[str] = []
+    for model in candidates:
+        model = str(model or "").strip()
+        if not model or model in UNCENSORED_MODEL_IDS:
+            continue
+        if provider == "nvidia" and (model.startswith("openrouter/") or model.endswith(":free")):
+            # NVIDIA NIM direct expects its own catalogue ids.
+            continue
+        if model not in out:
+            out.append(model)
+    return out
+
+
+def failover_chain(
+    current_provider: str = "",
+    current_model: str = "",
+    *,
+    max_routes: int = 3,
+    exclude_providers: Optional[Iterable[str]] = None,
+) -> List[Dict[str, str]]:
+    """Build a bounded list of alternate provider/model routes.
+
+    The active provider is always skipped, so a 429/daily-limit can never turn
+    into a silent retry against the same quota. Only providers with a
+    configured key are offered, and no key material is returned.
+    """
+    if not failover_enabled():
+        return []
+    try:
+        from utils import appconfig
+
+        limit = max(0, min(8, int(max_routes if max_routes else appconfig.get("failover_max_routes", 3) or 3)))
+        raw_providers = appconfig.get("failover_providers", ["nvidia", "openrouter"]) or []
+    except Exception:
+        limit = 3
+        raw_providers = ["nvidia", "openrouter"]
+    if isinstance(raw_providers, str):
+        raw_providers = [p.strip() for p in raw_providers.split(",") if p.strip()]
+    excluded = {str(p).strip().lower() for p in (exclude_providers or []) if str(p).strip()}
+    excluded.add(str(current_provider or current_provider()).strip().lower())
+    configured = _failover_config_models()
+    chain: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(provider: str, model: str) -> None:
+        provider = str(provider or "").strip().lower()
+        model = str(model or "").strip()
+        if provider not in PROVIDERS or not model:
+            return
+        if provider in excluded:
+            return
+        if not get_api_key(provider=provider):
+            return
+        signature = f"{provider}|{model}"
+        if signature in seen or signature == f"{current_provider}|{current_model}":
+            return
+        seen.add(signature)
+        chain.append({
+            "provider": provider,
+            "label": str(PROVIDERS[provider]["label"]),
+            "model": model,
+            "url": str(PROVIDERS[provider]["chat_url"]),
+        })
+
+    for provider in raw_providers:
+        provider = str(provider).strip().lower()
+        if provider in excluded:
+            continue
+        for model in _model_candidates(provider, current_provider, current_model):
+            add(provider, model)
+    # Explicit user-configured models can name their backend with '|' or '/'.
+    for item in configured:
+        provider = ""
+        model = item
+        for marker in ("|", "::"):
+            if marker in item:
+                maybe, _, rest = item.partition(marker)
+                if maybe.strip().lower() in PROVIDERS:
+                    provider, model = maybe.strip().lower(), rest.strip()
+                    break
+        if not provider:
+            provider = get_provider(item).strip().lower()
+            if provider not in PROVIDERS:
+                provider = "openrouter"
+        add(provider, model)
+        if len(chain) >= limit:
+            break
+    return chain[:limit]
+
+
+def is_failover_error(exc: BaseException) -> bool:
+    """Rate limits, daily caps and budget failures are failover candidates."""
+    if not failover_enabled():
+        return False
+    return bool(
+        getattr(exc, "is_rate_limit", False)
+        or getattr(exc, "is_budget", False)
+        or getattr(exc, "status_code", 0) in (402, 429)
+    )
+
+
+def format_failover_notice(exc: BaseException, route: Dict[str, str]) -> str:
+    """A redacted, user-facing notice. Never includes response bodies or keys."""
+    reason = "daily free-tier limit" if getattr(exc, "is_daily_limit", False) else (
+        "budget limit" if getattr(exc, "is_budget", False) else "rate limit"
+    )
+    source = str(getattr(exc, "provider_name", "") or "").strip() or "current provider"
+    return (
+        f"{source} {reason}; switching to {route.get('label') or route.get('provider')} "
+        f"direct ({route.get('model')}). Keys stay local; no quota bypass or retry storm."
+    )
+
+
+def record_failover(exc: BaseException, route: Dict[str, str]) -> None:
+    """Append a redacted failover record for /failover."""
+    try:
+        FAILOVER_ROOT.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": time.time(),
+            "from": str(getattr(exc, "provider_name", "") or ""),
+            "reason": str(getattr(exc, "reason", "") or "rate_limit"),
+            "status_code": int(getattr(exc, "status_code", 0) or 0),
+            "to_provider": str(route.get("provider") or ""),
+            "to_model": str(route.get("model") or ""),
+            "to_label": str(route.get("label") or ""),
+        }
+        with FAILOVER_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def failover_history(limit: int = 8) -> List[Dict[str, Any]]:
+    try:
+        rows = [json.loads(line) for line in FAILOVER_LOG.read_text().splitlines() if line.strip()]
+        return rows[-max(0, min(100, int(limit or 8))):]
+    except Exception:
+        return []
+
+
+def status_lines() -> List[str]:
+    rows = failover_history(2)
+    last = ""
+    if rows:
+        last = f"{rows[-1].get('from') or '?'} -> {rows[-1].get('to_label') or '?'} ({rows[-1].get('to_model') or '?'})"
+    return [
+        f"Provider failover: {'ON' if failover_enabled() else 'OFF'}",
+        f"  chain: {', '.join(r['label'] for r in failover_chain(current_provider())) or 'none configured'}",
+        f"  last switch: {last or 'none'}",
+        "  /failover | /failover on|off | /failover max <n>",
+    ]
 
 
 # --------------------------------------------------------------------------

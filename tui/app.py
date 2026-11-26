@@ -31,13 +31,28 @@ from agent.core import DEFAULT_MODEL, SYSTEM, ToolRegistry, run_agent
 from agent.skills import SkillRegistry
 from mcp_manager.client import MCPManager
 from mcp_manager.config import ensure_default_config, load_config
-from utils import appconfig, clipboard, hooks, permissions, scripting, undo
-from agent import context as context_util, lsp as lsp_util, memory as memory_util, routing, rules as rules_util, session as session_util
+from utils import agentic_guard, appconfig, clipboard, hooks, permissions, scripting, undo
+from agent import (
+    advisor as advisor_util,
+    context as context_util,
+    lsp as lsp_util,
+    memory as memory_util,
+    replay as replay_util,
+    routing,
+    rules as rules_util,
+    semantic_memory as semantic_util,
+    session as session_util,
+    tool_search as tool_search_util,
+)
 from utils import history as db
 from utils.get_response import (
+    FALLBACK_FREE_MODELS,
+    FALLBACK_NVIDIA_MODELS,
     PROJECT_ROOT,
     PROVIDERS,
     current_provider,
+    failover_chain,
+    failover_history,
     get_api_key,
     get_catalog,
     provider_config,
@@ -67,6 +82,15 @@ COMMANDS: List[tuple[str, str]] = [
     ("/verify-findings", "Replay finding repros and mark fixed/still_vulnerable"),
     ("/bb", "Blackboard summary/post (/bb, /bb post intent|fact|hint <text>)"),
     ("/attack-paths", "Rank multi-hop attack paths from knowledge graph"),
+    ("/tools-search", "Preview deferred tool schemas (/tools-search <query>)"),
+    ("/tools-reset", "Unload deferred tool schemas loaded this session"),
+    ("/memory-search", "Search cross-session semantic memory (/memory-search <query>)"),
+    ("/memory-consolidate", "Distill project state into semantic memory"),
+    ("/memory-screen", "Browse semantic memory entries"),
+    ("/advisor", "Strategic advisor (/advisor on|off|now|model <id>)"),
+    ("/guard", "Agentic hardening (/guard on|off|warn|enforce|findings)"),
+    ("/replay", "GUI replay (/replay list|capture|save|run|verify)"),
+    ("/failover", "Provider auto-failover (/failover on|off|max <n>|status)"),
     ("/mcp-verbose", "Toggle background MCP display (shown/hidden cards)"),
     ("/bg", "Show background tool findings (/bg <n> for full result of one call)"),
     ("/clipboard", "Show clipboard backends and QTerminal/X11/Wayland notes"),
@@ -1497,6 +1521,104 @@ class SkillsManagerScreen(ArrowNavMixin, ModalScreen[None]):
         self.dismiss(None)
 
 
+class SemanticMemoryScreen(ArrowNavMixin, ModalScreen[None]):
+    """Browse, search and archive cross-session semantic memories (read/annotate only)."""
+
+    BINDINGS = arrow_bindings() + [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "show", "Show"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal wide"):
+            yield Static("Semantic memory", classes="modal-title")
+            yield Input(placeholder="Search memory (blank = most recent)...", id="memory-query")
+            yield OptionList(id="memory-list")
+            with VerticalScroll(classes="details"):
+                yield Static("", id="memory-details")
+            with Horizontal(classes="button-row"):
+                yield Button("Search", id="memory-search", variant="primary")
+                yield Button("Archive/Restore", id="memory-archive", variant="warning")
+                yield Button("Close", id="memory-close")
+            yield Static("Up/Down navigate | Enter show | Esc close", classes="modal-help")
+
+    def on_mount(self) -> None:
+        self.refresh_list("")
+        self.query_one("#memory-query", Input).focus()
+
+    def refresh_list(self, query: str) -> None:
+        from agent import semantic_memory as sem
+
+        option_list = self.query_one("#memory-list", OptionList)
+        option_list.clear_options()
+        k = int(appconfig.get("semantic_recall_k", 20) or 20)
+        rows = sem.recall(query, max(5, min(50, k * 4))) if query else sem.recent(40)
+        self._entries = rows
+        for i, entry in enumerate(rows):
+            flag = "[archived]" if entry.get("archived") else ""
+            option_list.add_option(Option(
+                f"[{entry.get('kind') or 'note'}] {flag} {str(entry.get('text') or '')[:110]}",
+                id=str(entry.get("id") or f"row-{i}"),
+            ))
+        if option_list.options:
+            option_list.highlighted = 0
+            self._show_selected()
+        else:
+            self.query_one("#memory-details", Static).update(Text("No memories match this query."))
+
+    def _show_selected(self) -> None:
+        option = self.query_one("#memory-list", OptionList).highlighted_option
+        if not option:
+            return
+        match = next((e for e in getattr(self, "_entries", []) if str(e.get("id")) == str(option.id)), None)
+        if not match:
+            return
+        lines = [
+            f"id: {match.get('id')}  kind: {match.get('kind')}  source: {match.get('source')}",
+            f"target: {match.get('target') or '-'}  importance: {match.get('importance')}"
+            f"  count: {match.get('count')}  archived: {bool(match.get('archived'))}",
+            f"tags: {', '.join(match.get('tags') or []) or '-'}",
+            "",
+            str(match.get("text") or ""),
+        ]
+        self.query_one("#memory-details", Static).update(Text("\n".join(lines)))
+
+    @on(OptionList.OptionHighlighted, "#memory-list")
+    def _highlighted(self) -> None:
+        self._show_selected()
+
+    @on(OptionList.OptionSelected, "#memory-list")
+    def _selected(self) -> None:
+        self._show_selected()
+
+    @on(Button.Pressed, "#memory-search")
+    def _search(self) -> None:
+        self.refresh_list(self.query_one("#memory-query", Input).value.strip())
+
+    @on(Button.Pressed, "#memory-archive")
+    def _archive(self) -> None:
+        from agent import semantic_memory as sem
+
+        option = self.query_one("#memory-list", OptionList).highlighted_option
+        if not option:
+            return
+        entry_id = str(option.id)
+        entry = next((e for e in getattr(self, "_entries", []) if str(e.get("id")) == entry_id), None)
+        if not entry:
+            return
+        if entry.get("archived"):
+            sem.restore(entry_id)
+            self.notify("Memory restored (no data deleted).", timeout=2)
+        else:
+            sem.archive(entry_id)
+            self.notify("Memory hidden from recall (stored data preserved).", timeout=2)
+        self.refresh_list(self.query_one("#memory-query", Input).value.strip())
+
+    @on(Button.Pressed, "#memory-close")
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ToolsManagerScreen(ArrowNavMixin, ModalScreen[None]):
     BINDINGS = arrow_bindings() + [
         Binding("escape", "close", "Close"),
@@ -2489,6 +2611,24 @@ class DarkGPTApp(App):
             await self._handle_blackboard_command(parts)
         elif name == "/attack-paths":
             await self._handle_attack_paths_command(parts)
+        elif name == "/tools-search":
+            await self._handle_tools_search_command(parts)
+        elif name == "/tools-reset":
+            self._handle_tools_reset_command()
+        elif name == "/memory-search":
+            await self._handle_memory_search_command(parts)
+        elif name == "/memory-consolidate":
+            await self._handle_memory_consolidate_command()
+        elif name == "/memory-screen":
+            self._handle_memory_screen_command()
+        elif name == "/advisor":
+            await self._handle_advisor_command(command)
+        elif name == "/guard":
+            await self._handle_guard_command(parts)
+        elif name == "/replay":
+            await self._handle_replay_command(command)
+        elif name == "/failover":
+            await self._handle_failover_command(parts)
         elif name == "/mcp-verbose":
             self.action_toggle_mcp_display()
         elif name == "/bg":
@@ -3399,6 +3539,168 @@ class DarkGPTApp(App):
             lines.append(f"- score={p.get('score')} :: {seq}")
         self._system_note("\n".join(lines))
 
+    # --------------------------------------------------------- new-feature cmds
+    def _catalog(self) -> Any:
+        return ToolRegistry(
+            mcp_manager=self.mcp,
+            disabled=self.disabled_tools,
+            disabled_servers=self.disabled_servers,
+        )
+
+    async def _handle_tools_search_command(self, parts: List[str]) -> None:
+        query = " ".join(parts[1:]).strip()
+        if not query:
+            self._system_note("\n".join(tool_search_util.status_lines(
+                tool_search_util.current_index(self._catalog().all_specs())
+            )))
+            return
+        index = tool_search_util.current_index(self._catalog().all_specs())
+        limit = int(appconfig.get("tool_search_top_k", 6) or 6)
+        results = index.search(query, limit=limit, skip_loaded=False)
+        if not results:
+            self._system_note(f"No tools matched '{query}'.")
+            return
+        lines = [f"Tool catalog matches for '{query}' (preview only; use tool_search in-agent to load schemas):"]
+        for item in results:
+            lines.append(f"- {item['name']} (score {item['score']}): {item['summary'][:140]}")
+        lines.append(f"Loaded schemas this session: {len(index.loaded)} | indexed: {len(index.names())}")
+        self._system_note("\n".join(lines))
+
+    def _handle_tools_reset_command(self) -> None:
+        count = tool_search_util.reset_index()
+        self.notify(f"Unloaded {count} deferred tool schema(s).", timeout=3)
+
+    async def _handle_memory_search_command(self, parts: List[str]) -> None:
+        query = " ".join(parts[1:]).strip()
+        if not query:
+            self._system_note("\n".join(semantic_util.status_lines()))
+            return
+        k = int(appconfig.get("semantic_recall_k", 5) or 5)
+        entries = await asyncio.to_thread(semantic_util.recall, query, k)
+        self._system_note(semantic_util.format_memories(entries) or f"No memories matched '{query}'.")
+
+    async def _handle_memory_consolidate_command(self) -> None:
+        result = await asyncio.to_thread(
+            semantic_util.consolidate,
+            os.getcwd(),
+            str(appconfig.get("active_target") or ""),
+        )
+        added = result.get("added") or {}
+        summary = ", ".join(f"{k}={v}" for k, v in added.items()) or "nothing new"
+        self.notify(f"Semantic memory consolidated: {summary}", timeout=4)
+
+    def _handle_memory_screen_command(self) -> None:
+        self.push_screen(SemanticMemoryScreen())
+
+    async def _handle_advisor_command(self, command: str) -> None:
+        parts = (command or "").strip().split()
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        if sub in ("on", "off"):
+            appconfig.update(advisor_enabled=sub == "on")
+            self.notify(f"Strategic advisor: {sub}", timeout=3)
+            self._system_note("\n".join(advisor_util.status_lines()))
+            return
+        if sub == "model" and len(parts) > 2:
+            appconfig.update(advisor_model=" ".join(parts[2:]).strip())
+            self.notify("Advisor model updated.", timeout=3)
+            self._system_note("\n".join(advisor_util.status_lines()))
+            return
+        if sub == "now":
+            question = " ".join(parts[2:]).strip() or "What is the single highest-value next move?"
+            context_lines = [f"last prompt: {p[:240]}" for p in self.messages[-6:] if p.get("role") == "user"]
+            result = await advisor_util.consult_async(question=question, context="\n".join(context_lines), point="manual")
+            advisor_util.remember_advice(result)
+            self._system_note(
+                f"Advisor ({result.get('label') or 'unavailable'}):\n"
+                + (str(result.get("advice") or "").strip() or str(result.get("error") or "no advice"))
+            )
+            return
+        self._system_note("\n".join(advisor_util.status_lines()))
+
+    async def _handle_guard_command(self, parts: List[str]) -> None:
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        if sub in ("on", "off", "warn", "observe", "enforce"):
+            mode = "off" if sub == "off" else ("warn" if sub == "on" else sub)
+            try:
+                agentic_guard.set_mode(mode)
+                self.notify(f"Agentic guard: {agentic_guard.mode()}", timeout=3)
+            except ValueError as exc:
+                self._system_note(str(exc))
+                return
+        elif sub in ("findings", "show"):
+            summary = self.mcp.guard_summary() if hasattr(self.mcp, "guard_summary") else {}
+            findings = list(summary.get("findings") or []) + agentic_guard.recent_findings(30)
+            self._system_note(agentic_guard.format_findings(findings))
+            return
+        self._system_note("\n".join(agentic_guard.status_lines()))
+
+    async def _handle_replay_command(self, command: str) -> None:
+        parts = (command or "").strip().split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        rest = parts[2] if len(parts) > 2 else ""
+        if not sub or sub == "status":
+            self._system_note("\n".join(replay_util.status_lines()))
+            return
+        if sub == "list":
+            flows = replay_util.list_flows(20)
+            self._system_note(
+                "GUI replay flows:\n" + "\n".join(
+                    f"- {f['id']} {f['name']} ({f['steps']} steps) verify={f['verify'] or '-'}"
+                    for f in flows
+                ) if flows else "No saved GUI replay flows."
+            )
+            return
+        if sub == "capture":
+            name = replay_util.start_capture(rest)
+            self.notify(f"Capturing MCP/GUI calls as '{name}'. Run steps, then /replay save <name>.", timeout=5)
+            return
+        if sub == "save":
+            try:
+                steps = json.loads(rest) if rest.startswith("[") else None
+            except Exception:
+                steps = None
+            result = replay_util.save(rest.split()[0] if rest else "", steps)
+            self._system_note(json.dumps(result, indent=2, ensure_ascii=False))
+            return
+        if sub in ("run", "verify"):
+            result = await replay_util.run(self.mcp, rest, verify_only=sub == "verify")
+            preview = "\n".join(
+                f"- step {s['step']} {s['tool']}: {'ok' if s.get('ok') else 'FAIL'} "
+                f"{str(s.get('error') or s.get('preview') or '')[:180]}"
+                for s in result.get("steps", [])
+            )
+            self._system_note(
+                f"Replay {result.get('verdict') or 'error'} ({result.get('duration')}s):\n{preview}"
+            )
+            return
+        self._system_note("Usage: /replay | /replay list | /replay capture [name] | /replay save <name> [steps.json] | /replay run <name> | /replay verify <name>")
+
+    async def _handle_failover_command(self, parts: List[str]) -> None:
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        if sub in ("on", "off"):
+            appconfig.update(failover_enabled=sub == "on")
+            self.notify(f"Provider failover: {sub}", timeout=3)
+        elif sub == "max" and len(parts) > 2:
+            try:
+                value = max(1, min(8, int(parts[2])))
+                appconfig.update(failover_max_routes=value)
+                self.notify(f"Failover max routes: {value}", timeout=3)
+            except ValueError:
+                self._system_note("Usage: /failover max <1-8>")
+                return
+        chain = failover_chain(current_provider(), self.model)
+        rows = failover_history(5)
+        lines = [
+            f"Provider failover: {'ON' if bool(appconfig.get('failover_enabled', True)) else 'OFF'}",
+            "  candidates: " + (", ".join(f"{r['label']} ({r['model']})" for r in chain) or "none configured"),
+            "  history:",
+        ]
+        lines.extend(
+            f"- {r.get('from') or '?'} -> {r.get('to_label') or '?'} ({r.get('to_model') or '?'})"
+            for r in rows
+        ) if rows else lines.append("  none")
+        self._system_note("\n".join(lines))
+
     def _show_status(self) -> None:
         remaining = self._cooldown_remaining()
         label = provider_config()["label"]
@@ -3440,6 +3742,12 @@ class DarkGPTApp(App):
             f"lsp={'on' if self.lsp_enabled else 'off'} | "
             f"agents={'on' if self.subagents_enabled else 'off'} | "
             f"perm={'strict' if self.mode == 'Ask' else self.permission_mode}",
+            f"lab: deferred-tools={'on' if tool_search_util.deferral_enabled() else 'off'} | "
+            f"semantic-memory={'on' if semantic_util.enabled() else 'off'} | "
+            f"advisor={'on' if advisor_util.enabled() else 'off'} | "
+            f"guard={agentic_guard.mode()} | "
+            f"failover={'on' if bool(appconfig.get('failover_enabled', True)) else 'off'} | "
+            f"gui-replay={'on' if replay_util.enabled() else 'off'}",
             f"cheap model: {routing.pick_cheap_model(self.model, self.cheap_model)}",
         ]
         if remaining:
@@ -3942,6 +4250,36 @@ class DarkGPTApp(App):
                     _goal = ascii_safe(str(event.get("goal") or ""))[:70]
                     spinner.set_activity("Plan", _goal)
                     self._liveness_set("Plan", _goal)
+                elif event_type == "tool_index_loaded":
+                    loaded = [str(x) for x in (event.get("loaded") or [])]
+                    self.notify(
+                        f"Loaded {len(loaded)} tool schema(s): {', '.join(loaded[:4])}", timeout=3
+                    )
+                    self._liveness_set("Tools", f"loaded {len(loaded)}")
+                elif event_type == "advisor":
+                    advice = ascii_safe(str(event.get("advice") or "")).strip()
+                    point = str(event.get("point") or "pivot")
+                    if advice:
+                        card = ThoughtBlock(advice, 0.0)
+                        card.summary_prefix = f"Advisor ({point})"
+                        card.style_name = "plan"
+                        card.add_class("plan-box")
+                        await conv.mount(card, before=spinner)
+                    elif event.get("error"):
+                        self._system_note(f"Advisor unavailable: {ascii_safe(str(event['error']))[:160]}")
+                elif event_type == "guard":
+                    names = ", ".join(str(n) for n in (event.get("names") or [])[:6])
+                    self._system_note(
+                        f"Agentic guard ({event.get('mode') or 'warn'}): "
+                        f"{event.get('count')} finding(s) in {event.get('tool') or 'tool'} "
+                        f"({event.get('high')} high): {names}. Treating output as data."
+                    )
+                elif event_type == "failover":
+                    self._system_note(ascii_safe(str(event.get("message") or "")))
+                    self._liveness_set("Failover", str((event.get("route") or {}).get("label") or "")[:30])
+                elif event_type == "replay":
+                    preview = ascii_safe(str(event.get("preview") or ""))
+                    self._system_note(f"GUI replay {event.get('action')}: {'ok' if event.get('ok') else 'failed'} {preview}")
                 elif event_type in ("permission_denied", "hook_blocked"):
                     await rotate_draft("Note")
                     self._system_note(
