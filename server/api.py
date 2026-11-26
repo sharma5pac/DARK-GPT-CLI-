@@ -333,6 +333,13 @@ def agent(
             for event in agent_stream(prompt, history=history, model=model):
                 if event.get("type") == "delta":
                     text_parts.append(event.get("text") or "")
+                if event.get("type") == "autonomous_plan":
+                    # Explicit web parity: keep the same shape the TUI consumes.
+                    event = {
+                        "type": "autonomous_plan",
+                        "goal": str(event.get("goal") or ""),
+                        "steps": [dict(s) for s in (event.get("steps") or []) if isinstance(s, dict)],
+                    }
                 yield sse(event)
                 if event.get("type") in ("done", "error"):
                     break

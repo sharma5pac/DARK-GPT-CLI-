@@ -2597,8 +2597,9 @@ async def run_agent(
                     "message": (
                         f"Halted: {display} was requested {MAX_REPEAT_CALLS} times with identical "
                         f"arguments and every attempt failed. Last result: {detail}. "
-                        f"Change the URL/query, try web_search, or use shell "
-                        "with curl for this target. Run /retry after adjusting the request."
+                        "Pivot now: change the URL/query/method/payload, try web_search "
+                        "or shell with curl, or pick a different tool route. Do not "
+                        "repeat the same call; /retry is optional and only for a revised request."
                     ),
                 }
             return {
@@ -2606,8 +2607,9 @@ async def run_agent(
                 "fatal": True,
                 "message": (
                     f"Halted: {display} was requested {MAX_REPEAT_CALLS} times with identical arguments, "
-                    "but its result was already available. Use that result instead of repeating the "
-                    "call. Run /retry with a revised request if you need something else."
+                    "but its result was already available. Use that result and pivot to a new "
+                    "route instead of repeating the call; /retry is optional and only for a "
+                    "revised request."
                 ),
             }
         return None

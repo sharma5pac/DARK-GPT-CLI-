@@ -26,7 +26,7 @@ except Exception:
 from textual.widgets.option_list import Option
 
 from agent import tokens as token_util
-from agent import jobs, tool_discovery, tool_inventory
+from agent import browser as browser_util, jobs, tool_discovery, tool_inventory
 from agent.core import DEFAULT_MODEL, SYSTEM, ToolRegistry, run_agent
 from agent.skills import SkillRegistry
 from mcp_manager.client import MCPManager
@@ -2492,7 +2492,7 @@ class DarkGPTApp(App):
             mode_button.set_class(self.mode == "Ask", "mode-ask")
             self.query_one("#hint-line", Static).update(
                 f" Tab: {self.mode}  |  Copy: Ctrl+Alt+C/Alt+C  |  Paste: Ctrl+Alt+V/Alt+V"
-                f"  |  Browser: ON  |  Learn: {'ON' if self.self_learning_enabled else 'OFF'}"
+                f"  |  {browser_util.status()['label']}  |  Learn: {'ON' if self.self_learning_enabled else 'OFF'}"
             )
             self.query_one("#model-btn", Button).label = self.model.split("/")[-1]
             self.query_one("#footer-mcp", Static).update(
@@ -2614,6 +2614,40 @@ class DarkGPTApp(App):
                 snapshot = {}
         try:
             self.query_one("#engagement-panel", EngagementPanel).set_snapshot(target, snapshot)
+        except Exception:
+            pass
+
+    async def _auto_consolidate_engagement(self) -> None:
+        """Distill durable state into semantic memory when an engagement ends.
+
+        An engagement is 'ended' when it has goals and no queued/claimed
+        intents. This is opt-out via semantic_auto_consolidate and never
+        deletes prior memory: consolidate() only adds new entries.
+        """
+        try:
+            if not semantic_util.enabled():
+                return
+            if not bool(appconfig.get("semantic_auto_consolidate", True)):
+                return
+            target = self._engagement_target()
+            if not target:
+                return
+            from agent import engagement as engagement_util
+
+            snap = await asyncio.to_thread(engagement_util.summary, target, 3)
+            goals = snap.get("goals") or {}
+            intents = snap.get("intents") or {}
+            if not goals.get("total") or intents.get("queued") or intents.get("claimed"):
+                return
+            result = await asyncio.to_thread(
+                semantic_util.consolidate, os.getcwd(), target,
+                include_chat=False, limit=10,
+            )
+            total = int(result.get("total") or 0)
+            if total:
+                self._system_note(
+                    f"Memory consolidated at engagement end: {total} durable entries"
+                )
         except Exception:
             pass
 
@@ -4864,6 +4898,7 @@ class DarkGPTApp(App):
             timeline.finish_all(ok=not failed)
             self.refresh_status()
             self.run_worker(self._refresh_engagement_panel(), exclusive=False)
+            self.run_worker(self._auto_consolidate_engagement(), exclusive=False)
 
         # Flush any throttled streamed content into the final response only.
         final_text = "".join(content_parts)

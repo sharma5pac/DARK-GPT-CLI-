@@ -208,6 +208,59 @@ def test_poc_fields_and_retest_history_render_in_all_formats():
     assert "still_reproducible" in json.dumps(json.loads(reporting.build_json(t)))
 
 
+def test_browser_status_reports_real_engine(tmp_path, monkeypatch):
+    import time
+
+    from agent import browser as browser_util
+
+    health = tmp_path / "health.json"
+    health.write_text(json.dumps({"ts": time.time(), "playwright_ok": False, "detail": "broken"}))
+    monkeypatch.setattr(browser_util, "HEALTH_PATH", health)
+    status = browser_util.status()
+    assert status["playwright"] is False
+    assert status["engine"] in ("selenium", "none")
+    assert status["label"].startswith("Browser: ")
+    assert status["detail"] == "broken"
+
+
+def test_repeat_guard_does_not_force_retry():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "agent" / "core.py").read_text(encoding="utf-8")
+    assert "Run /retry after adjusting" not in source
+    assert "Run /retry with a revised request" not in source
+    assert "repeat the same call" in source
+
+
+def test_tui_has_auto_consolidation_and_web_plan_parity(monkeypatch):
+    from agent import tool_discovery
+    from tui.app import DarkGPTApp
+    from utils import agent as web_agent
+
+    assert hasattr(DarkGPTApp, "_auto_consolidate_engagement")
+
+    monkeypatch.setattr(tool_discovery, "discover_tools", lambda explicit: [])
+    monkeypatch.setattr(tool_discovery, "rank_tools", lambda objective, tools, **kw: [])
+    monkeypatch.setattr(tool_discovery, "build_routes", lambda objective, routes: [])
+
+    payload = web_agent.tool_autonomous_plan("enumerate example.test")
+    assert payload["ok"] and payload["steps"]
+
+    replies = [
+        {"choices": [{"message": {"content": "", "tool_calls": [{
+            "id": "c1", "function": {"name": "autonomous_plan",
+            "arguments": json.dumps({"objective": "enumerate example.test"})},
+        }]}}]},
+        {"choices": [{"message": {"content": "done", "tool_calls": []}}]},
+    ]
+    monkeypatch.setattr(web_agent, "_chat", lambda payload: replies.pop(0))
+    events = list(web_agent.agent_stream("enumerate example.test", model="test"))
+    plans = [e for e in events if e.get("type") == "autonomous_plan"]
+    assert plans and plans[0]["goal"] == "enumerate example.test"
+    assert plans[0]["steps"]
+
+
 def test_worker_roles_have_schemas():
     from agent import subagents
 

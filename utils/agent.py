@@ -115,6 +115,26 @@ def tool_web_search(query: str, max_results: int = 5) -> Dict:
     return {"results": results, "formatted": format_results(results)}
 
 
+def tool_autonomous_plan(objective: str, tool: str = "", limit: int = 4) -> Dict:
+    """Plan-only local-tool route discovery; never executes a command.
+
+    This gives the web/SSE agent the same GOAL/WORKING/FINISHED plan event the
+    TUI gets from ``autonomous_route``, without bypassing TUI permission gates.
+    """
+    try:
+        from agent import autonomous, tool_discovery
+
+        limit = max(1, min(int(limit or 4), 10))
+        explicit = [p.strip() for p in str(tool or "").split(",") if p.strip()]
+        found = tool_discovery.discover_tools(explicit)
+        ranked = tool_discovery.rank_tools(str(objective or ""), found, limit=limit)
+        routes = tool_discovery.build_routes(str(objective or ""), ranked)
+        steps = autonomous.build_plan(str(objective or ""), routes)
+        return {"ok": True, "goal": str(objective or ""), "steps": steps, "routes": routes}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc), "goal": str(objective or ""), "steps": []}
+
+
 TOOLS = {
     "shell": {
         "desc": "Run a bash command in the current working directory. Use for git, tests, builds, system tools.",
@@ -155,6 +175,11 @@ TOOLS = {
         "desc": "Search the web for current information and sources.",
         "params": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]},
         "fn": tool_web_search,
+    },
+    "autonomous_plan": {
+        "desc": "Build a live GOAL/WORKING/FINISHED plan from local tool discovery and ranked routes. Planning only: it never executes commands.",
+        "params": {"type": "object", "properties": {"objective": {"type": "string"}, "tool": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["objective"]},
+        "fn": tool_autonomous_plan,
     },
 }
 
@@ -237,6 +262,17 @@ def agent_stream(prompt: str, history: Optional[List[Dict]] = None, model: str =
                     args = {"_raw": raw_args}
                 yield {"type": "tool_start", "name": name, "args": args}
                 result = run_tool(name, args)
+                if name == "autonomous_plan":
+                    # Web/SSE parity with the TUI's live plan event.
+                    try:
+                        parsed = json.loads(result)
+                    except Exception:
+                        parsed = {}
+                    yield {
+                        "type": "autonomous_plan",
+                        "goal": str(parsed.get("goal") or str(args.get("objective") or "")),
+                        "steps": [dict(s) for s in (parsed.get("steps") or []) if isinstance(s, dict)],
+                    }
                 yield {"type": "tool_end", "name": name, "result": result[:4000]}
                 messages.append({"role": "tool", "tool_call_id": tc.get("id", f"call_{step}_{name}"), "content": result})
             continue

@@ -54,6 +54,40 @@ def _playwright_healthy() -> bool:
         return False
 
 
+def status() -> Dict[str, Any]:
+    """Real, cheap browser capability snapshot for UI/status displays.
+
+    Uses the cached health probe (never launches a browser here) plus a local
+    Selenium import check. Playwright is known-broken on some hosts, so the
+    reported engine is the one that would actually be used by ``run()``.
+    """
+    playwright_ok = False
+    detail = ""
+    try:
+        if HEALTH_PATH.exists():
+            data = json.loads(HEALTH_PATH.read_text(encoding="utf-8"))
+            playwright_ok = bool(data.get("playwright_ok"))
+            detail = str(data.get("detail") or "")[:200]
+    except Exception:
+        pass
+    selenium_ok = False
+    try:
+        import importlib.util
+
+        selenium_ok = importlib.util.find_spec("selenium") is not None
+    except Exception:
+        pass
+    engine = "playwright" if playwright_ok else ("selenium" if selenium_ok else "none")
+    return {
+        "ok": playwright_ok or selenium_ok,
+        "playwright": playwright_ok,
+        "selenium": selenium_ok,
+        "engine": engine,
+        "label": f"Browser: {engine.upper()}" if engine != "none" else "Browser: OFF",
+        "detail": detail,
+    }
+
+
 def _system_python() -> str:
     """Prefer the interpreter that actually has Selenium/Playwright."""
     candidates = ["/usr/bin/python3", shutil.which("python3"), sys.executable]
