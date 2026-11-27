@@ -147,6 +147,77 @@ def tool_math_attack(action: str = "status", **kwargs) -> Dict:
         return {"ok": False, "error": str(exc)}
 
 
+def tool_neutral_route(
+    goal: str,
+    scope: str = "all",
+    args: Optional[Dict] = None,
+    execute: bool = False,
+    limit: int = 6,
+    target: str = "",
+) -> Dict:
+    """Web/SSE parity for the universal neutral router.
+
+    This loop has no ToolRegistry/MCP manager, so it routes over its own tool
+    catalog, active skills, and verified local binaries. Execution stays
+    opt-in and limited to one selected tool.
+    """
+    try:
+        from agent import neutral_router as neutral_util
+        from agent import skills as skills_util
+
+        decision = neutral_util.decide(
+            goal,
+            tool_specs(),
+            skills_util.SkillRegistry(),
+            provided_args=args if isinstance(args, dict) else {},
+            scope=scope,
+            limit=limit,
+            target=target,
+        )
+        if execute and decision.get("decided"):
+            primary = decision.get("primary") or {}
+            kind = str(primary.get("kind") or "")
+            chosen = str(primary.get("name") or "")
+            if kind in ("tool", "mcp") and decision.get("can_execute"):
+                raw = run_tool(chosen, decision.get("args") or {})
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    parsed = raw
+                decision["executed"] = True
+                decision["executed_tool"] = chosen
+                decision["result_preview"] = raw[:1400]
+                decision["result"] = parsed
+                decision["executed_ok"] = (
+                    bool(parsed.get("ok", True)) if isinstance(parsed, dict) else True
+                )
+            elif kind == "skill":
+                skill = skills_util.SkillRegistry().get(chosen)
+                instructions = str(getattr(skill, "instructions", "") or "")[:8000]
+                decision["executed"] = True
+                decision["executed_tool"] = "skills"
+                decision["result_preview"] = instructions[:1400]
+                decision["result"] = {"ok": bool(skill), "skill": chosen, "instructions": instructions}
+                decision["executed_ok"] = bool(skill)
+            elif kind == "local":
+                decision["execute_blocked"] = (
+                    "local binaries are routed but not auto-executed; "
+                    "use an explicit command or a dedicated tool"
+                )
+            else:
+                missing = ", ".join(decision.get("missing") or [])
+                decision["execute_blocked"] = (
+                    f"missing required args: {missing}" if missing
+                    else str(decision.get("note") or "selected route is not executable")
+                )
+        decision["text"] = neutral_util.format_decision(
+            decision, executed=bool(decision.get("executed"))
+        )
+        return decision
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS = {
     "shell": {
         "desc": "Run a bash command in the current working directory. Use for git, tests, builds, system tools.",
@@ -198,6 +269,11 @@ TOOLS = {
         "params": {"type": "object", "properties": {"action": {"type": "string"}, "goal": {"type": "string"}, "domain": {"type": "string"}, "op": {"type": "string"}, "input": {"type": "object"}, "expr": {"type": "string"}, "expected": {}, "title": {"type": "string"}, "rule": {"type": "string"}, "query": {"type": "string"}, "target": {"type": "string"}}, "required": ["action"]},
         "fn": tool_math_attack,
     },
+    "neutral_route": {
+        "desc": "Universal neutral router over local tools, active skills and verified local binaries. Decide is read-only; execute=true runs at most one selected tool or loads one skill. Missing required args are reported, not guessed.",
+        "params": {"type": "object", "properties": {"goal": {"type": "string"}, "scope": {"type": "string"}, "args": {"type": "object"}, "execute": {"type": "boolean"}, "limit": {"type": "integer"}, "target": {"type": "string"}}, "required": ["goal"]},
+        "fn": tool_neutral_route,
+    },
 }
 
 
@@ -225,6 +301,9 @@ def run_tool(name: str, args: Dict) -> str:
 
 SYSTEM = """You are DarkGPT Agent, a local coding/ops assistant running on the user's machine.
 You can use tools to inspect files, edit code, run commands, search, and browse the web.
+When the right tool or skill is unclear, call neutral_route with the plain goal first:
+it searches the catalog and returns the best route plus any missing arguments. It is
+read-only unless execute=true, and executes at most one selected tool.
 Be direct and technical. Show what you did. If a command is risky/destructive, say so clearly.
 When using web search, cite source URLs. Prefer small, verifiable steps."""
 

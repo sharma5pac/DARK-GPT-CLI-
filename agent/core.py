@@ -54,6 +54,7 @@ from agent import (
     evidence as evidence_util,
     knowledge_graph as kg_util,
     math_attack as math_util,
+    neutral_router as neutral_util,
     planner as planner_util,
     work_graph as work_graph_util,
     lsp,
@@ -347,6 +348,7 @@ class ToolRegistry:
             {"type": "function", "function": {"name": "delegate", "description": "Spawn an isolated read-only subagent (explore/review/test) to work on a focused task in parallel; returns a concise report", "parameters": {"type": "object", "properties": {"role": {"type": "string", "enum": ["explore", "review", "test", "recon", "vuln_analysis", "exploit_validation", "reporting", "goal_decomposer", "intent_planner", "coverage_auditor", "poc_builder", "retest_reviewer", "math_formalizer", "symbolic_deriver", "numerical_experimenter", "proof_auditor"]}, "task": {"type": "string"}, "focus": {"type": "string"}}, "required": ["role", "task"]}}},
             {"type": "function", "function": {"name": "script", "description": "PREFERRED for speed: write and RUN a Python or bash helper script in one call. Use this first for recon/enumeration/fuzzing/parsing/bulk checks/multi-step automation/report building/data transforms-anything that would take multiple shell/read/grep/browser calls. Scripts are faster, repeatable, and saved as evidence under ~/.cache/darkgpt/scripts. Return exit_code, output, script_path. Use python for parsing/HTTP/JSON/logic; bash for quick CLI pipelines. Keep scripts focused; print clear findings.", "parameters": {"type": "object", "properties": {"language": {"type": "string", "enum": ["python", "bash"]}, "code": {"type": "string", "description": "Complete runnable script. Include imports/shebang assumptions as needed; print actionable output."}, "args": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "description": "Seconds, default 30, max 120."}}, "required": ["language", "code"]}}},
             {"type": "function", "function": {"name": "math_attack", "description": "Math-for-attacks analysis with real persistent learning. Use the neutral `decide` link for a plain goal: it chooses route/op/input without side effects; add execute=true to run. Other actions: analyze (bounded symbolic, number theory, stats, graph or crypto computation), verify (residual check), learn (persist an evidence-backed reusable rule), recall, status, domains, rh_status. Results are appended to the active target evidence ledger and return an evidence_ref. RH/GRH is formally verified as of Nov 2026 but does NOT break RSA/ECC/AES.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["decide", "route", "plan", "auto", "analyze", "compute", "verify", "learn", "recall", "status", "domains", "rh_status", "help"], "description": "decide/route/plan picks the route without running it; auto or execute=true runs it; analyze/compute runs a bounded worker; learn needs title+rule; recall searches learned rules."}, "goal": {"type": "string", "description": "Short analysis question; used by decide/analyze to pick the math route."}, "execute": {"type": "boolean", "description": "For decide: run the chosen computation after showing the decision."}, "auto": {"type": "boolean", "description": "Alias of execute."}, "domain": {"type": "string", "enum": ["crypto", "prng", "stats", "graph", "timing", "number_theory", "proof"], "description": "Optional route override."}, "op": {"type": "string", "description": "Worker op: symbolic, number_theory, stats, graph, crypto, verify. Omit to auto-route."}, "input": {"type": "object", "description": "Bounded payload for the worker, e.g. {samples:[...], test:'entropy'} or {n:10403, op:'factor'}."}, "expr": {"type": "string", "description": "For verify: expression to check."}, "expected": {"description": "For verify: expected expression/value."}, "tolerance": {"type": "number"}, "title": {"type": "string", "description": "For learn: reusable lesson title."}, "rule": {"type": "string", "description": "For learn: generalized rule, not raw numbers."}, "trigger": {"type": "string"}, "evidence_ref": {"type": "string", "description": "For learn: evidence id from a prior math_attack result. Without it the lesson is candidate, not verified."}, "confidence": {"type": "number"}, "query": {"type": "string", "description": "For recall: search learned rules."}, "limit": {"type": "integer"}, "target": {"type": "string"}}, "required": ["action"]}}},
+            {"type": "function", "function": {"name": "neutral_route", "description": "UNIVERSAL NEUTRAL LINK over built-in tools, MCP tools, active skills, and verified local binaries. Default decide is read-only: it returns the chosen route, skill/tool/MCP candidate, required arguments, confidence, and alternatives. Set execute=true to run at most ONE selected registry/MCP tool or load ONE selected skill through the normal hooks/permissions; missing arguments are returned instead of guessed. Local binaries are routed, never silently executed. Use this when the user does not name a tool, when unsure which capability fits, or when the catalog is large.", "parameters": {"type": "object", "properties": {"goal": {"type": "string", "description": "Plain-language objective or question."}, "scope": {"type": "string", "enum": ["all", "tools", "skills", "mcp", "local"], "description": "Catalog scope, default all."}, "args": {"type": "object", "description": "Optional arguments for the selected tool. Missing required args are reported, not invented."}, "execute": {"type": "boolean", "description": "Run at most one selected tool/skill after deciding. Default false."}, "limit": {"type": "integer", "description": "Candidate count, 1-12, default 6."}, "target": {"type": "string", "description": "Optional target; used for evidence and target-aware args."}}, "required": ["goal"]}}},
             {"type": "function", "function": {"name": "discover_tools", "description": "AUTO-DISCOVER verified local tools before choosing a route. Scans PATH and ~/.local/bin, returns resolved paths, capability tags, and Kala/MCP wrapper hints. Use this whenever the task names or implies a tool such as aircrack-ng, hashcat, john, openssl, nmap, ffuf, Burp Suite, Wireshark, or Ghidra.", "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "The user objective, used to rank tools."}, "tools": {"type": "string", "description": "Optional comma-separated required tool names even if not in the catalog."}, "limit": {"type": "integer"}}, "required": ["objective"]}}},
             {"type": "function", "function": {"name": "autonomous_route", "description": "One-call autonomous tool orchestration for local pentest tools: discover -> rank -> probe top routes in parallel -> optionally execute explicit command(s) -> record evidence in the active target ledger. Emits a live GOAL/WORKING/FINISHED plan beside the prompt. Use this for any objective that names a local tool. Set execute=true only after reading --help and supply command or commands; never guess destructive commands.", "parameters": {"type": "object", "properties": {"objective": {"type": "string"}, "tool": {"type": "string", "description": "Comma-separated required tool names."}, "command": {"type": "string", "description": "One explicit command to execute when execute=true."}, "commands": {"type": "object", "description": "Optional map of tool name to explicit command, or list of {tool,command}, for multi-route execution."}, "probe": {"type": "boolean"}, "execute": {"type": "boolean"}, "timeout": {"type": "integer"}, "limit": {"type": "integer"}, "target": {"type": "string"}}, "required": ["objective"]}}},
             # ---- Cline-compatible built-in tools ---------------------------------
@@ -652,6 +654,93 @@ class ToolRegistry:
                 if on_event and loaded:
                     on_event({"type": "tool_index_loaded", "loaded": loaded, "total": len(index.loaded)})
                 return clamp(tool_search_util.format_search_results(str(args.get("query") or ""), results, index))
+            if name == "neutral_route":
+                goal = str(args.get("goal") or "")
+                provided = args.get("args")
+                if not isinstance(provided, dict):
+                    provided = {}
+                target = self._active_target(args)
+                registry = self.skills or skills_util.SkillRegistry()
+                payload = await asyncio.to_thread(
+                    neutral_util.decide,
+                    goal,
+                    self.all_specs(),
+                    registry,
+                    provided_args=provided,
+                    scope=str(args.get("scope") or "all"),
+                    limit=_clamp_int(args.get("limit"), 1, 12, 6),
+                    target=target,
+                )
+                if on_event:
+                    primary = payload.get("primary") or {}
+                    on_event({
+                        "type": "neutral_route",
+                        "goal": goal[:240],
+                        "scope": str(payload.get("scope") or ""),
+                        "kind": str(primary.get("kind") or ""),
+                        "name": str(primary.get("name") or ""),
+                        "confidence": str(payload.get("confidence") or ""),
+                        "next_action": str(payload.get("next_action") or ""),
+                    })
+                if bool(args.get("execute")) and payload.get("decided"):
+                    primary = payload.get("primary") or {}
+                    kind = str(primary.get("kind") or "")
+                    chosen = str(primary.get("name") or "")
+                    if kind in ("tool", "mcp") and payload.get("can_execute"):
+                        raw = await self.run(
+                            chosen,
+                            payload.get("args") or {},
+                            emit=emit,
+                            on_event=on_event,
+                        )
+                        payload["executed"] = True
+                        payload["executed_tool"] = chosen
+                        payload["result_preview"] = raw[:1400]
+                        try:
+                            parsed = json.loads(raw)
+                        except Exception:
+                            parsed = raw
+                        payload["result"] = parsed
+                        payload["executed_ok"] = (
+                            bool(parsed.get("ok", True))
+                            if isinstance(parsed, dict)
+                            else True
+                        )
+                    elif kind == "skill":
+                        raw = await self.run(
+                            "skills",
+                            {"skill": chosen, "args": goal},
+                            emit=emit,
+                            on_event=on_event,
+                        )
+                        payload["executed"] = True
+                        payload["executed_tool"] = "skills"
+                        payload["result_preview"] = raw[:1400]
+                        try:
+                            parsed = json.loads(raw)
+                        except Exception:
+                            parsed = raw
+                        payload["result"] = parsed
+                        payload["executed_ok"] = (
+                            bool(parsed.get("ok", True))
+                            if isinstance(parsed, dict)
+                            else True
+                        )
+                    elif kind == "local":
+                        payload["execute_blocked"] = (
+                            "local binaries are routed but not auto-executed; "
+                            "use autonomous_route or provide an explicit command"
+                        )
+                    else:
+                        missing = ", ".join(payload.get("missing") or [])
+                        payload["execute_blocked"] = (
+                            f"missing required args: {missing}" if missing
+                            else str(payload.get("note") or "selected route is not executable")
+                        )
+                payload["text"] = neutral_util.format_decision(
+                    payload, executed=bool(payload.get("executed"))
+                )
+                return clamp(json.dumps(payload, ensure_ascii=False))
             if name == "math_attack":
                 payload = await asyncio.to_thread(
                     math_util.run, args, target=self._active_target(args),
@@ -1915,6 +2004,15 @@ HOW YOU THINK
 HOW YOU GET WHAT YOU NEED (DO NOT STOP AT THE FIRST FAILURE)
 - The goal is the *outcome*, not one tool call. If a route fails, change the route
   and keep going. Never report "could not" while an untried method remains.
+- **UNIVERSAL NEUTRAL ROUTING:** when the user does not name a tool, or you are
+  unsure which built-in/MCP/skill/local capability fits, call `neutral_route` with
+  the plain goal first. It searches every catalog and returns the selected route,
+  skill/tool/MCP candidate, required arguments, confidence, and alternatives.
+  `neutral_route` is read-only by default; set `execute=true` to run at most ONE
+  selected registry/MCP tool or load ONE selected skill through the normal gates.
+  Never invent missing required arguments; pass them explicitly or ask one focused
+  question. Local binaries are routed, not silently executed - use
+  `autonomous_route` with an explicit command for those.
 - **AUTONOMOUS LOCAL TOOL ROUTING:** for any objective that names or implies a
   local tool (aircrack-ng, hashcat, john, openssl, nmap, ffuf, sqlmap, Burp Suite,
   Wireshark, Ghidra, etc.), call `discover_tools` or `autonomous_route` FIRST.

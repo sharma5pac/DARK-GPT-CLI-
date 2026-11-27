@@ -62,6 +62,7 @@ NVIDIA_API_KEY=your-nvidia-key-here
 | **HackSkills engine** | Active security skill router with deep topic skills for recon, API, auth, injection, cloud, AD, mobile, binary, and more |
 | **Browser automation** | Real browser actions (Playwright -> Selenium fallback) for JS-heavy pages, forms, clicks, extraction, screenshots |
 | **MCP-native** | Connect stdio/HTTP MCP servers; discover and call tools; per-server toggles |
+| **Universal neutral router** | One read-only `neutral_route` decision across built-in tools, MCP servers, active skills and local binaries; opt-in execution runs at most one gated call |
 | **Proof-first security workflow** | Findings tracked as `attempted/proved/false_positive` with evidence refs, repro, impact, remediation |
 | **Operator UX** | Textual TUI, streaming phases, tool cards, diff cards, undo, sessions/checkpoints, copy/paste |
 
@@ -113,6 +114,8 @@ DarkGPT is also a serious coding agent:
 | `/targets` `/kg` `/evidence` `/report` | Inspect graph, evidence, generate report |
 | `/recon [focus]` | Run parallel recon orchestration |
 | `/skills` `/mcp` `/tools` | Manage skills, MCP servers, tools |
+| `/neutral [decide\|auto] <goal> [:: <json>]` | Route across tools, MCP, skills and local binaries; `auto` runs one gated call |
+| `/math [decide\|auto] <goal>` | Math-for-attacks route, bounded computation and proof-status checks |
 | `/lessons` `/patterns` `/learn` | Self-learning controls |
 | `/diff` `/undo` `/verify` `/review` | Safe code-change workflow |
 | `/checkpoint` `/sessions` `/resume` | Session state management |

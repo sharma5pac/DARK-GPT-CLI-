@@ -95,6 +95,7 @@ COMMANDS: List[tuple[str, str]] = [
     ("/memory-consolidate", "Distill project state into semantic memory"),
     ("/memory-screen", "Browse semantic memory entries"),
     ("/math", "Math-for-attacks: /math [decide|auto <goal> :: <json>|status|domains|rh|review <query>|compute <op> <json>]"),
+    ("/neutral", "Universal router across tools, MCP, skills and local binaries (/neutral [decide|auto] <goal> :: <json>)"),
     ("/advisor", "Strategic advisor (/advisor on|off|now|model <id>)"),
     ("/guard", "Agentic hardening (/guard on|off|warn|enforce|findings)"),
     ("/replay", "GUI replay (/replay list|capture|save|run|verify)"),
@@ -2998,6 +2999,8 @@ class DarkGPTApp(App):
             self._handle_memory_screen_command()
         elif name == "/math":
             await self._handle_math_command(command)
+        elif name == "/neutral":
+            await self._handle_neutral_command(command)
         elif name == "/advisor":
             await self._handle_advisor_command(command)
         elif name == "/guard":
@@ -4046,6 +4049,60 @@ class DarkGPTApp(App):
 
     def _handle_memory_screen_command(self) -> None:
         self.push_screen(SemanticMemoryScreen())
+
+    async def _handle_neutral_command(self, command: str) -> None:
+        parts = (command or "").strip().split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        rest = parts[2] if len(parts) > 2 else ""
+        scope = "all"
+        execute = False
+        if sub in ("", "status", "help"):
+            registry = self._core_registry()
+            specs = registry.all_specs()
+            names = [str(s.get("function", {}).get("name") or "") for s in specs]
+            active_skills = self.skills.active_count() if self.skills else 0
+            self._system_note(
+                "Neutral router\n"
+                f"  catalog: {len([n for n in names if n and not n.startswith('mcp__')])} tools, "
+                f"{len([n for n in names if n.startswith('mcp__')])} MCP, "
+                f"{active_skills} active skills\n"
+                "  usage: /neutral [decide|auto] <goal> [:: <json args>]\n"
+                "         /neutral [all|tools|skills|mcp|local] <goal>\n"
+                "  decide is read-only; auto runs at most one selected tool or loads one skill."
+            )
+            return
+        if sub in ("decide", "decision", "route", "plan", "show"):
+            pass
+        elif sub == "auto":
+            execute = True
+        elif sub in ("all", "tools", "skills", "mcp", "local"):
+            scope = sub
+        else:
+            rest = " ".join(x for x in parts[1:] if x).strip()
+        goal, _, raw_args = rest.partition("::")
+        body: Dict[str, Any] = {}
+        if raw_args.strip():
+            try:
+                parsed = json.loads(raw_args.strip())
+                body = parsed if isinstance(parsed, dict) else {"input": parsed}
+            except Exception:
+                self._system_note("Router arguments after '::' must be valid JSON.")
+                return
+        payload = await self._run_core_tool(
+            "neutral_route",
+            {
+                "goal": goal.strip(),
+                "scope": scope,
+                "execute": execute,
+                "args": body,
+            },
+        )
+        rendered = str(payload.get("text") or "") if isinstance(payload, dict) else str(payload)
+        if not rendered:
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        if len(rendered) > 5000:
+            rendered = rendered[:5000] + "\n...[truncated; full result is in the ledger]"
+        self._system_note(rendered)
 
     async def _handle_math_command(self, command: str) -> None:
         parts = (command or "").strip().split(maxsplit=3)

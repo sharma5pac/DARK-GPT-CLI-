@@ -100,6 +100,10 @@ def risk_of(tool: str, args: Dict[str, Any] | None = None) -> str:
         return "danger" if DANGEROUS_RE.search(command) else "shell"
     if tool == "discover_tools":
         return "safe"
+    if tool == "neutral_route":
+        # The router itself is read-only. When execute=true it delegates to
+        # ToolRegistry.run for the selected tool, so that call is gated again.
+        return "safe"
     if tool == "autonomous_route":
         if not args.get("execute"):
             return "safe"

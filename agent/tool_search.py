@@ -34,7 +34,7 @@ _CURRENT_INDEX: Optional[ToolIndex] = None
 # point is to stop shipping hundreds of unused MCP schemas on every turn.
 ALWAYS_ON: Tuple[str, ...] = (
     "shell", "read", "write", "edit", "ls", "grep", "glob",
-    "script", "math_attack", "ask_question", "submit_and_exit",
+    "script", "neutral_route", "math_attack", "ask_question", "submit_and_exit",
     "task_start", "task_list", "task_wait", "task_log", "task_kill",
     "discover_tools", "autonomous_route",
     "semantic_recall", "semantic_remember", "consult_advisor",
