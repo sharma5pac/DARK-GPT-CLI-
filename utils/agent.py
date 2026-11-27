@@ -135,6 +135,18 @@ def tool_autonomous_plan(objective: str, tool: str = "", limit: int = 4) -> Dict
         return {"ok": False, "error": str(exc), "goal": str(objective or ""), "steps": []}
 
 
+def tool_math_attack(action: str = "status", **kwargs) -> Dict:
+    """Web/SSE parity for the TUI math-for-attacks tool."""
+    try:
+        from agent import math_attack as math_util
+
+        args = dict(kwargs or {})
+        args["action"] = action
+        return math_util.run(args, target=str(args.get("target") or ""))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS = {
     "shell": {
         "desc": "Run a bash command in the current working directory. Use for git, tests, builds, system tools.",
@@ -180,6 +192,11 @@ TOOLS = {
         "desc": "Build a live GOAL/WORKING/FINISHED plan from local tool discovery and ranked routes. Planning only: it never executes commands.",
         "params": {"type": "object", "properties": {"objective": {"type": "string"}, "tool": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["objective"]},
         "fn": tool_autonomous_plan,
+    },
+    "math_attack": {
+        "desc": "Math-for-attacks analysis and persistent learning: crypto/PRNG/stats/timing/graph computations, verification and RH status.",
+        "params": {"type": "object", "properties": {"action": {"type": "string"}, "goal": {"type": "string"}, "domain": {"type": "string"}, "op": {"type": "string"}, "input": {"type": "object"}, "expr": {"type": "string"}, "expected": {}, "title": {"type": "string"}, "rule": {"type": "string"}, "query": {"type": "string"}, "target": {"type": "string"}}, "required": ["action"]},
+        "fn": tool_math_attack,
     },
 }
 

@@ -24,6 +24,9 @@ def skill_dirs(tmp_path, monkeypatch):
         "---\nname: hack\ndescription: Master doctrine\n---\nMASTER BODY\n",
         encoding="utf-8",
     )
+    bundled = tmp_path / "bundled-skills"
+    bundled.mkdir()
+    monkeypatch.setattr(skill_mod, "BUNDLED_SKILLS_DIR", bundled)
     monkeypatch.setattr(skill_mod, "USER_SKILLS_DIR", user)
     monkeypatch.setattr(skill_mod, "PROJECT_SKILLS_DIR", tmp_path / "project-skills")
     monkeypatch.setattr(skill_mod, "STATE_PATH", state)
@@ -56,3 +59,35 @@ def test_large_active_library_uses_compact_catalog_with_master(skill_dirs):
     assert "MASTER BODY" in text
     assert "skill-14: Test skill 14" in text
     assert "Body 14" not in text  # full documents are loaded via the `skills` tool
+
+
+def test_bundled_math_skills_are_discovered_and_user_wins(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    bundled = root / "skills" / "math-example"
+    bundled.mkdir(parents=True)
+    (bundled / "SKILL.md").write_text(
+        "---\nname: math-example\ndescription: Bundled math skill\ntriggers: math\n---\nBUNDLED BODY\n",
+        encoding="utf-8",
+    )
+    user = tmp_path / "user-skills"
+    user.mkdir()
+    override = user / "math-example"
+    override.mkdir()
+    (override / "SKILL.md").write_text(
+        "---\nname: math-example\ndescription: User math skill\n---\nUSER BODY\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(skill_mod, "BUNDLED_SKILLS_DIR", root / "skills")
+    monkeypatch.setattr(skill_mod, "USER_SKILLS_DIR", user)
+    monkeypatch.setattr(skill_mod, "PROJECT_SKILLS_DIR", tmp_path / "project-skills")
+    monkeypatch.setattr(skill_mod, "STATE_PATH", tmp_path / "state.json")
+
+    registry = skill_mod.SkillRegistry()
+    assert registry.is_active("math-example")
+    assert registry.get("math-example").instructions == "USER BODY"
+
+
+def test_checked_in_math_skill_files_parse():
+    registry = skill_mod.SkillRegistry()
+    assert registry.get("math-attack-analysis") is not None
+    assert registry.get("riemann-hypothesis-crypto") is not None

@@ -26,7 +26,7 @@ except Exception:
 from textual.widgets.option_list import Option
 
 from agent import tokens as token_util
-from agent import browser as browser_util, jobs, tool_discovery, tool_inventory
+from agent import browser as browser_util, jobs, math_attack as math_util, tool_discovery, tool_inventory
 from agent.core import DEFAULT_MODEL, SYSTEM, ToolRegistry, run_agent
 from agent.skills import SkillRegistry
 from mcp_manager.client import MCPManager
@@ -94,6 +94,7 @@ COMMANDS: List[tuple[str, str]] = [
     ("/memory-search", "Search cross-session semantic memory (/memory-search <query>)"),
     ("/memory-consolidate", "Distill project state into semantic memory"),
     ("/memory-screen", "Browse semantic memory entries"),
+    ("/math", "Math-for-attacks: /math [status|domains|rh|review <query>|compute <op> <json>]"),
     ("/advisor", "Strategic advisor (/advisor on|off|now|model <id>)"),
     ("/guard", "Agentic hardening (/guard on|off|warn|enforce|findings)"),
     ("/replay", "GUI replay (/replay list|capture|save|run|verify)"),
@@ -2995,6 +2996,8 @@ class DarkGPTApp(App):
             await self._handle_memory_consolidate_command()
         elif name == "/memory-screen":
             self._handle_memory_screen_command()
+        elif name == "/math":
+            await self._handle_math_command(command)
         elif name == "/advisor":
             await self._handle_advisor_command(command)
         elif name == "/guard":
@@ -4043,6 +4046,74 @@ class DarkGPTApp(App):
 
     def _handle_memory_screen_command(self) -> None:
         self.push_screen(SemanticMemoryScreen())
+
+    async def _handle_math_command(self, command: str) -> None:
+        parts = (command or "").strip().split(maxsplit=3)
+        sub = parts[1].lower() if len(parts) > 1 else "status"
+        rest = parts[2] if len(parts) > 2 else ""
+        tail = parts[3] if len(parts) > 3 else ""
+        target = str(appconfig.get("active_target") or "").strip()
+        if sub in ("status", "summary", "learned"):
+            payload = await asyncio.to_thread(math_util.status)
+        elif sub in ("domain", "domains", "routes"):
+            payload = await asyncio.to_thread(math_util.domains)
+        elif sub in ("rh", "riemann", "grh", "rh_status"):
+            payload = await asyncio.to_thread(math_util.rh_status)
+        elif sub in ("review", "recall", "lessons", "search"):
+            query = " ".join(x for x in (rest, tail) if x).strip()
+            payload = await asyncio.to_thread(
+                lambda: math_util.recall(query, domain="", limit=8)
+            )
+        elif sub in ("verify", "check"):
+            expr = " ".join(x for x in (rest, tail) if x).strip()
+            payload = await asyncio.to_thread(
+                lambda: math_util.run(
+                    {"action": "verify", "expr": expr, "expected": 0}, target=target
+                )
+            )
+        elif sub in ("compute", "analyze", "solve"):
+            op = rest.strip().lower()
+            raw = tail.strip() or "{}"
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {"input": raw}
+            if not isinstance(body, dict):
+                body = {"input": body}
+            payload = await asyncio.to_thread(
+                lambda: math_util.compute(
+                    op or "stats", body, goal=f"/math {sub} {op}", target=target
+                )
+            )
+        elif sub == "learn":
+            text = " ".join(x for x in (rest, tail) if x).strip()
+            if "::" not in text:
+                self._system_note("Usage: /math learn <domain> <title> :: <generalized rule>")
+                return
+            lhs, rule = text.split("::", 1)
+            lhs_parts = lhs.strip().split(maxsplit=1)
+            domain = lhs_parts[0] if lhs_parts else ""
+            title = lhs_parts[1] if len(lhs_parts) > 1 else domain
+            payload = await asyncio.to_thread(
+                lambda: math_util.learn(
+                    title,
+                    rule.strip(),
+                    domain=domain,
+                    source="tui",
+                    target=target,
+                )
+            )
+        else:
+            self._system_note(
+                "/math [status|domains|rh|review <query>|compute <op> <json>|verify <expr>|learn <domain> <title> :: <rule>]"
+            )
+            return
+        rendered = str(payload.get("text") or "") if isinstance(payload, dict) else str(payload)
+        if not rendered:
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        if len(rendered) > 5000:
+            rendered = rendered[:5000] + "\n...[truncated; full result is in evidence]"
+        self._system_note(rendered)
 
     async def _handle_advisor_command(self, command: str) -> None:
         parts = (command or "").strip().split()

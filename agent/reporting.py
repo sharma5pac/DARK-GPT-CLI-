@@ -96,6 +96,34 @@ def build_report_data(target: str) -> Dict[str, Any]:
         engagement_summary = eng.summary(target, limit=8)
     except Exception:
         pass
+    math_summary = {}
+    try:
+        from agent import math_attack as math_util
+        math_state = math_util.status()
+        verified_rules = []
+        for lesson in math_util.load_state().get("lessons", [])[-200:]:
+            if isinstance(lesson, dict) and lesson.get("status") == "verified":
+                verified_rules.append({
+                    "title": lesson.get("title") or "",
+                    "domain": lesson.get("domain") or "",
+                    "rule": str(lesson.get("rule") or "")[:800],
+                    "evidence_ref": lesson.get("evidence_ref") or "",
+                })
+        rh = math_util.rh_status()
+        math_summary = {
+            "lessons": math_state.get("lessons", 0),
+            "verified_lessons": math_state.get("verified_lessons", 0),
+            "progress": math_state.get("progress", {}),
+            "verified_rules": verified_rules[-20:],
+            "rh_status": {
+                "as_of": rh.get("as_of"),
+                "guardrail": rh.get("guardrail"),
+                "clay_status": rh.get("clay_status"),
+                "crypto_impact": rh.get("crypto_impact"),
+            },
+        }
+    except Exception:
+        pass
     return {
         "target": g.get("target", target),
         "slug": g.get("slug", ""),
@@ -123,6 +151,7 @@ def build_report_data(target: str) -> Dict[str, Any]:
         "attack_paths": attack_paths,
         "blackboard": blackboard_summary,
         "engagement": engagement_summary,
+        "math_analysis": math_summary,
         "execution_trace": trace,
         "evidence_by_tool": ev.get("by_tool") or {},
     }
@@ -209,6 +238,19 @@ def build_markdown(target: str) -> str:
         for retest in (eng.get("retests") or [])[-10:]:
             lines.append(f"- retest [{retest.get('verdict')}] {retest.get('finding')}")
         lines.append("")
+    math_info = d.get("math_analysis") or {}
+    if math_info:
+        lines.append("## Math analysis and learned rules")
+        lines.append("")
+        lines.append(f"- Lessons: {math_info.get('lessons', 0)} ({math_info.get('verified_lessons', 0)} evidence-verified)")
+        rh = math_info.get("rh_status") or {}
+        if rh:
+            lines.append(f"- Riemann hypothesis status ({rh.get('as_of', '-')}): {rh.get('clay_status', '-')}")
+            lines.append(f"- Crypto guardrail: {rh.get('guardrail', '-')}")
+        for rule in (math_info.get("verified_rules") or [])[-20:]:
+            lines.append(f"- [{rule.get('domain', 'math')}] {rule.get('title', '')} (evidence `{rule.get('evidence_ref', '')}`)")
+            lines.append(f"  - {str(rule.get('rule', ''))[:400]}")
+        lines.append("")
     lines.append("## Execution Trace (recent evidence)")
     lines.append("")
     lines.append("| Time (UTC) | ID | Tool | OK | SHA-256 | Preview |")
@@ -262,6 +304,21 @@ def build_html(target: str) -> str:
             f"<li>Coverage: {esc(cov.get('percent', 0))}% ({esc(cov.get('covered', 0))}/{esc(cov.get('world_nodes', 0))})</li>"
             "</ul>"
         )
+    math_info = d.get("math_analysis") or {}
+    math_html = ""
+    if math_info:
+        rh = math_info.get("rh_status") or {}
+        rules = "".join(
+            f"<li>[{esc(r.get('domain'))}] {esc(r.get('title'))} "
+            f"(evidence <code>{esc(r.get('evidence_ref'))}</code>): {esc(str(r.get('rule'))[:400])}</li>"
+            for r in (math_info.get("verified_rules") or [])[-20:]
+        )
+        math_html = (
+            "<h2>Math analysis and learned rules</h2><ul>"
+            f"<li>Lessons: {esc(math_info.get('lessons', 0))} ({esc(math_info.get('verified_lessons', 0))} evidence-verified)</li>"
+            f"<li>RH status ({esc(rh.get('as_of', '-'))}): {esc(rh.get('guardrail', '-'))}</li>"
+            f"</ul><ul>{rules or '<li><em>No verified math lessons yet.</em></li>'}</ul>"
+        )
     rows = []
     for e in d["execution_trace"][-150:]:
         rows.append("<tr><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>".format(
@@ -280,6 +337,7 @@ def build_html(target: str) -> str:
 </ul>
 <h2>Findings</h2>{''.join(finding_blocks) or '<p><em>No findings recorded yet.</em></p>'}
 {engagement_html}
+{math_html}
 <h2>Execution Trace</h2>
 <table><thead><tr><th>Time</th><th>ID</th><th>Tool</th><th>OK</th><th>SHA-256</th><th>Preview</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=6><em>None</em></td></tr>'}</tbody></table>
 </body></html>"""

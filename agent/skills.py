@@ -10,8 +10,9 @@ Skills are plain Markdown files with optional YAML-ish frontmatter::
     ---
     Instructions the model should follow while the skill is active.
 
-Search order: user skills first, then project skills. A project skill with the
-same name overrides the user one. Every discovered skill is active by default;
+Search order: bundled skills, then user skills, then project skills. A project
+skill with the same name overrides the user and bundled ones. Every discovered
+skill is active by default;
 only an explicit deactivation is persisted across TUI restarts. Full documents
 are loaded on demand via the `skills` tool so the system prompt stays compact.
 """
@@ -26,6 +27,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 USER_SKILLS_DIR = Path.home() / ".config" / "darkgpt" / "skills"
 PROJECT_SKILLS_DIR = Path.cwd() / ".darkgpt" / "skills"
+# Skills shipped with the source tree. User and project skills override these
+# by name, so local customization is never clobbered by an update.
+BUNDLED_SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 STATE_PATH = Path.home() / ".config" / "darkgpt" / "skills_state.json"
 
 
@@ -120,7 +124,7 @@ class Skill:
 
 class SkillRegistry:
     def __init__(self, extra_dirs: Optional[Iterable[Path]] = None) -> None:
-        self.dirs: List[Path] = [USER_SKILLS_DIR, PROJECT_SKILLS_DIR]
+        self.dirs: List[Path] = [BUNDLED_SKILLS_DIR, USER_SKILLS_DIR, PROJECT_SKILLS_DIR]
         if extra_dirs:
             self.dirs.extend(Path(p) for p in extra_dirs)
         self._skills: Dict[str, Skill] = {}

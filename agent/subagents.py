@@ -78,6 +78,18 @@ Return a final JSON object in a ```json``` block with schema:
     "retest_reviewer": """You are the retester. Given prior findings and replay output, classify each as still_reproducible, fixed, or cannot_confirm with a concrete reason. Never confirm without evidence.
 Return a final JSON object in a ```json``` block with schema:
 {"retests":[{"finding":"","verdict":"still_reproducible|fixed|cannot_confirm","why":"","evidence_ref":""}],"next_step":""}""",
+    "math_formalizer": """You are a math formalizer for attack analysis. Convert the question into exact definitions, assumptions, theorem scope, and checkable success criteria. State what is not covered. Never claim a proof from intuition.
+Return a final JSON object in a ```json``` block with schema:
+{"question":"","definitions":[""],"assumptions":[""],"scope":"","success_criteria":[""],"not_covered":[""],"next_step":""}""",
+    "symbolic_deriver": """You are a symbolic derivation subagent. Given a formal question, derive the expression/identity step by step, keep algebra exact, and name the residual check that would prove it. Do not use target-side destructive actions.
+Return a final JSON object in a ```json``` block with schema:
+{"derivation":[""],"result":"","residual_check":"","assumptions":[""],"next_step":""}""",
+    "numerical_experimenter": """You are a numerical experiment subagent. Design bounded experiments (sample sizes, baselines, tolerances, controls) for a math claim in attack analysis. Interpret numbers as signals, not proof.
+Return a final JSON object in a ```json``` block with schema:
+{"experiments":[{"name":"","input":"","expected_signal":"","control":"","tolerance":""}],"pivots":[""],"next_step":""}""",
+    "proof_auditor": """You are a proof auditor. Given a claim, theorem scope, and evidence refs, check whether the statement and proof actually match the claim. Explicitly reject overclaims such as 'RH breaks encryption'. Never promote a claim without evidence.
+Return a final JSON object in a ```json``` block with schema:
+{"claim":"","verdict":"verified|unverified|overclaimed","scope":"","reasons":[""],"evidence_refs":[""],"overclaims":[""],"next_step":""}""",
 }
 
 SUBTOOL_RE = re.compile(r"```subtool\s*(\{.*?\})\s*```", re.DOTALL)
@@ -103,6 +115,14 @@ ROLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "pocs": {"type": "array"}, "next_step": {"type": "string"}}},
     "retest_reviewer": {"type": "object", "required": ["retests", "next_step"], "properties": {
         "retests": {"type": "array"}, "next_step": {"type": "string"}}},
+    "math_formalizer": {"type": "object", "required": ["question", "scope", "success_criteria", "next_step"], "properties": {
+        "question": {"type": "string"}, "scope": {"type": "string"}, "success_criteria": {"type": "array"}, "next_step": {"type": "string"}}},
+    "symbolic_deriver": {"type": "object", "required": ["derivation", "result", "residual_check", "next_step"], "properties": {
+        "derivation": {"type": "array"}, "result": {"type": "string"}, "residual_check": {"type": "string"}, "next_step": {"type": "string"}}},
+    "numerical_experimenter": {"type": "object", "required": ["experiments", "next_step"], "properties": {
+        "experiments": {"type": "array"}, "next_step": {"type": "string"}}},
+    "proof_auditor": {"type": "object", "required": ["claim", "verdict", "scope", "reasons", "next_step"], "properties": {
+        "claim": {"type": "string"}, "verdict": {"type": "string"}, "scope": {"type": "string"}, "reasons": {"type": "array"}, "next_step": {"type": "string"}}},
 }
 
 
