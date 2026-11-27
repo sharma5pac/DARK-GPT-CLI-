@@ -194,7 +194,7 @@ TOOLS = {
         "fn": tool_autonomous_plan,
     },
     "math_attack": {
-        "desc": "Math-for-attacks analysis and persistent learning: crypto/PRNG/stats/timing/graph computations, verification and RH status.",
+        "desc": "Math-for-attacks analysis and persistent learning: neutral decide link, crypto/PRNG/stats/timing/graph computations, verification and RH status.",
         "params": {"type": "object", "properties": {"action": {"type": "string"}, "goal": {"type": "string"}, "domain": {"type": "string"}, "op": {"type": "string"}, "input": {"type": "object"}, "expr": {"type": "string"}, "expected": {}, "title": {"type": "string"}, "rule": {"type": "string"}, "query": {"type": "string"}, "target": {"type": "string"}}, "required": ["action"]},
         "fn": tool_math_attack,
     },

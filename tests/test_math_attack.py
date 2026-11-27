@@ -37,6 +37,51 @@ def test_analyze_routes_prng_and_writes_evidence(isolated_math):
     assert result["mastery"] > 0
 
 
+def test_decide_is_side_effect_free_until_execute(isolated_math):
+    before = math_mod.load_state()
+    decision = math_mod.run(
+        {
+            "action": "decide",
+            "goal": "check session token entropy",
+            "input": {"samples": [0, 1, 1, 0, 1, 0, 1, 1], "test": "entropy"},
+        },
+        target="math-test",
+    )
+    assert decision["decided"] is True
+    assert decision["domain"] == "prng"
+    assert decision["op"] == "stats"
+    assert decision["executed"] is False
+    assert "NEUTRAL DECISION LINK" in decision["text"]
+    after = math_mod.load_state()
+    assert after["events"] == before["events"]
+    assert after["lessons"] == before["lessons"]
+    assert evidence.read_entries("math-test") == []
+
+
+def test_decide_asks_instead_of_guessing_when_unclear(isolated_math):
+    decision = math_mod.run({"action": "decide", "goal": "help me with math"})
+    assert decision["decided"] is False
+    assert decision["confidence"] == "low"
+    assert decision["executed"] is False
+    assert "Which math route" in decision["question"]
+
+
+def test_decide_auto_executes_confident_route(isolated_math):
+    decision = math_mod.run(
+        {
+            "action": "auto",
+            "goal": "check session token entropy",
+            "input": {"samples": [0, 1, 1, 0, 1, 0, 1, 1], "test": "entropy"},
+        },
+        target="math-test",
+    )
+    assert decision["decided"] is True
+    assert decision["executed"] is True
+    assert decision["ok"] is True
+    assert decision["entropy_bits"] > 0
+    assert decision["evidence_ref"]
+
+
 def test_chi_square_buckets_are_deterministic(isolated_math):
     payload = {"samples": ["a", "b", "c", "a", "b", "a"], "test": "chi_square", "buckets": 8}
     first = math_mod.compute("stats", payload, domain="stats")
@@ -91,8 +136,12 @@ def test_report_includes_math_analysis(isolated_math):
 
 
 def test_tool_spec_includes_math_attack_and_tui_command():
-    names = {s["function"]["name"] for s in ToolRegistry().local_specs()}
+    specs = ToolRegistry().local_specs()
+    names = {s["function"]["name"] for s in specs}
     assert "math_attack" in names
+    math_spec = next(s for s in specs if s["function"]["name"] == "math_attack")
+    actions = math_spec["function"]["parameters"]["properties"]["action"]["enum"]
+    assert "decide" in actions and "auto" in actions
     from tui.app import COMMANDS
 
     assert any(command == "/math" for command, _ in COMMANDS)
@@ -108,11 +157,13 @@ def test_tui_math_command_renders_cards(isolated_math, monkeypatch):
         app = app_mod.DarkGPTApp()
         async with app.run_test(size=(140, 48)) as pilot:
             await pilot.pause()
+            await app.execute_command("/math decide check session token entropy")
             await app.execute_command("/math domains")
             await app.execute_command("/math rh")
             await pilot.pause()
 
     asyncio.run(run())
     joined = "\n".join(notes)
+    assert "NEUTRAL DECISION LINK" in joined
     assert "FORMALIZE -> COMPUTE -> VERIFY -> CRYPTO IMPACT" in joined
     assert "Riemann hypothesis status" in joined

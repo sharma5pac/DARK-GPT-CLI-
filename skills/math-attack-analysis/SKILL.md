@@ -29,10 +29,22 @@ result changes an attack path.
 | Hosts, endpoints, auth states, proven edges | `graph` | degree ranking and shortest proven path |
 | Claim about zeta/L-functions/RH/GRH | `number_theory` / `proof` | `rh_status`, residual `verify` |
 
-Call `math_attack(action="domains")` when the route is unclear. Call
-`math_attack(action="analyze", goal=..., domain=..., input=...)` to run a
-bounded computation. The worker is whitelist-based and size-bounded; it never
-accepts arbitrary code.
+## Neutral decision link
+
+When the route is unclear, call the neutral link first:
+
+`math_attack(action="decide", goal=..., input=...)`
+
+It returns the chosen route, op, bounded input, matched signals, confidence,
+and the questions worth answering. It has **no side effects**: no worker run,
+no state change, no evidence write. If confidence is low, it returns one
+clarifying question instead of guessing. Add `execute=true` (or TUI
+`/math auto <goal> :: <json>`) when the decision is clear and you want it run.
+
+Call `math_attack(action="domains")` for the full route catalog. Call
+`math_attack(action="analyze", goal=..., domain=..., input=...)` when you
+already know the route. The worker is whitelist-based and size-bounded; it
+never accepts arbitrary code.
 
 ## 2. Evidence and proof gates
 
@@ -74,6 +86,8 @@ patterns as hypotheses to re-check, not proof.
 
 ## 5. TUI and agent controls
 
+- `/math decide <goal> :: <json>` shows the neutral decision without running it;
+  `/math auto <goal> :: <json>` executes the same decision.
 - `/math` shows status; `/math domains` lists routes; `/math rh` prints the
   proof-status card; `/math review <query>` recalls learned rules.
 - The `math_attack` tool stays in the always-on schema set, so the agent can

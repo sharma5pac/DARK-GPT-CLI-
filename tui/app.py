@@ -94,7 +94,7 @@ COMMANDS: List[tuple[str, str]] = [
     ("/memory-search", "Search cross-session semantic memory (/memory-search <query>)"),
     ("/memory-consolidate", "Distill project state into semantic memory"),
     ("/memory-screen", "Browse semantic memory entries"),
-    ("/math", "Math-for-attacks: /math [status|domains|rh|review <query>|compute <op> <json>]"),
+    ("/math", "Math-for-attacks: /math [decide|auto <goal> :: <json>|status|domains|rh|review <query>|compute <op> <json>]"),
     ("/advisor", "Strategic advisor (/advisor on|off|now|model <id>)"),
     ("/guard", "Agentic hardening (/guard on|off|warn|enforce|findings)"),
     ("/replay", "GUI replay (/replay list|capture|save|run|verify)"),
@@ -4059,6 +4059,25 @@ class DarkGPTApp(App):
             payload = await asyncio.to_thread(math_util.domains)
         elif sub in ("rh", "riemann", "grh", "rh_status"):
             payload = await asyncio.to_thread(math_util.rh_status)
+        elif sub in ("decide", "decision", "route", "plan", "auto"):
+            text = " ".join(x for x in (rest, tail) if x).strip()
+            goal, _, raw_input = text.partition("::")
+            body: Dict[str, Any] = {}
+            if raw_input.strip():
+                try:
+                    parsed = json.loads(raw_input.strip())
+                    if isinstance(parsed, dict):
+                        body = parsed
+                    else:
+                        body = {"input": parsed}
+                except Exception:
+                    self._system_note("Decision input after '::' must be valid JSON.")
+                    return
+            payload = await asyncio.to_thread(
+                lambda: math_util.decide(
+                    goal.strip(), body, auto=sub == "auto", target=target
+                )
+            )
         elif sub in ("review", "recall", "lessons", "search"):
             query = " ".join(x for x in (rest, tail) if x).strip()
             payload = await asyncio.to_thread(
@@ -4105,7 +4124,7 @@ class DarkGPTApp(App):
             )
         else:
             self._system_note(
-                "/math [status|domains|rh|review <query>|compute <op> <json>|verify <expr>|learn <domain> <title> :: <rule>]"
+                "/math [decide|auto <goal> :: <json>|status|domains|rh|review <query>|compute <op> <json>|verify <expr>|learn <domain> <title> :: <rule>]"
             )
             return
         rendered = str(payload.get("text") or "") if isinstance(payload, dict) else str(payload)

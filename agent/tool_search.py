@@ -72,6 +72,7 @@ SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "crypto": ("rsa", "modular", "prime", "factor", "cipher", "key"),
     "riemann": ("rh", "grh", "zeta", "lfunction", "proof"),
     "entropy": ("prng", "random", "token", "bias", "distribution"),
+    "decide": ("route", "choose", "plan", "should", "what to do"),
 }
 
 

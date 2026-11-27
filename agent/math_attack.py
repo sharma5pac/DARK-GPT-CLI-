@@ -114,6 +114,12 @@ def _now() -> float:
     return time.time()
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def _blank_state() -> Dict[str, Any]:
     return {
         "version": 1,
@@ -183,6 +189,19 @@ def _recalculate_mastery(item: Dict[str, Any]) -> None:
     item["last_at"] = _now()
 
 
+def route_signals(goal: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
+    """Explainable evidence for a route decision; no side effects."""
+    text = f"{goal or ''} {' '.join(str(k) for k in (payload or {}))}".lower()
+    signals: Dict[str, List[str]] = {}
+    for domain, meta in DOMAINS.items():
+        matched = [phrase for phrase in meta["use_when"] if phrase in text]
+        if matched:
+            signals[domain] = matched
+    if bool((payload or {}).get("samples_b")):
+        signals.setdefault("timing", []).append("samples_b")
+    return signals
+
+
 def detect_domain(goal: str, op: str = "", payload: Optional[Dict[str, Any]] = None) -> str:
     text = f"{goal or ''} {op or ''} {' '.join(str(k) for k in (payload or {}))}".lower()
     scores: Dict[str, int] = {}
@@ -202,19 +221,40 @@ def detect_domain(goal: str, op: str = "", payload: Optional[Dict[str, Any]] = N
     return best if scores[best] > 0 else "stats"
 
 
-def _default_op(domain: str, payload: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+def _default_op(domain: str, payload: Dict[str, Any], goal: str = "") -> Tuple[str, Dict[str, Any]]:
+    text = str(goal or "").lower()
     if domain == "graph":
         return "graph", {"nodes": payload.get("nodes") or [], "edges": payload.get("edges") or [],
                          "start": payload.get("start") or "", "goal": payload.get("goal") or ""}
     if domain == "number_theory":
-        op = str(payload.get("number_op") or "primepi")
-        return "number_theory", {"op": op, "n": payload.get("n", 100), "s": payload.get("s")}
+        op = str(payload.get("number_op") or payload.get("op") or "").strip().lower()
+        if not op:
+            if "zeta" in text or "l-function" in text:
+                op = "zeta"
+            elif "bound" in text or "grh" in text:
+                op = "grh_bound"
+            else:
+                op = "primepi"
+        args: Dict[str, Any] = {"op": op, "n": payload.get("n", 100)}
+        if op == "zeta":
+            args["s"] = payload.get("s", 1.5)
+        return "number_theory", args
     if domain == "proof":
         return "verify", {"expr": payload.get("expr") or "", "expected": payload.get("expected", 0),
                           "tolerance": payload.get("tolerance", 1e-9)}
     if domain == "crypto":
         if payload.get("n") is not None:
-            return "crypto", {"op": "rsa_check", "n": payload["n"], "e": payload.get("e", 65537)}
+            op = str(payload.get("op") or "").strip().lower()
+            if not op:
+                op = "factor" if "factor" in text else "rsa_check"
+            if op == "isprime":
+                op = "prime"
+            args = {"op": op, "n": payload["n"], "e": payload.get("e", 65537)}
+            if op == "modinv":
+                args["modulus"] = payload.get("modulus", payload.get("m", 3120))
+            if op in ("factor", "factorint"):
+                args["allow_slow"] = _boolish(payload.get("allow_slow", False))
+            return "crypto", args
         if payload.get("samples"):
             return "crypto", {"op": "prng_bias", "samples": payload.get("samples"),
                               "test": payload.get("test", "entropy")}
@@ -292,6 +332,76 @@ def compute(op: str, payload: Dict[str, Any], *, domain: str = "", goal: str = "
         "tool": "math_attack", "action": "compute", "domain": domain,
         "op": op, "evidence_ref": evidence_ref, "mastery": item.get("mastery"),
     })
+    return result
+
+
+def decide(
+    goal: str = "",
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    domain: str = "",
+    auto: bool = False,
+    target: str = "",
+) -> Dict[str, Any]:
+    """Neutral decision link.
+
+    Given a plain-language goal and optional input, choose the math route,
+    worker op, and bounded payload. By default this is side-effect free: no
+    worker run, no state change, no evidence write. With ``auto=True`` it
+    executes the chosen computation through ``compute``.
+    """
+    goal = str(goal or "").strip()
+    payload = payload if isinstance(payload, dict) else {}
+    override = str(domain or "").strip().lower()
+    if override and override not in DOMAINS:
+        return {"ok": False, "error": f"unknown math domain: {override}", "supported": sorted(DOMAINS)}
+
+    signals = route_signals(goal, payload)
+    chosen = override or detect_domain(goal, "", payload)
+    matched = list(signals.get(chosen, []))
+    if override:
+        matched = ["explicit domain"] + matched
+        confidence = "high"
+    elif len(matched) >= 2:
+        confidence = "high"
+    elif len(matched) == 1 or bool(payload):
+        confidence = "medium"
+    else:
+        confidence = "low"
+    decided = confidence != "low"
+    op, args = _default_op(chosen, payload, goal)
+
+    decision: Dict[str, Any] = {
+        "ok": True,
+        "action": "decide",
+        "goal": goal,
+        "domain": chosen,
+        "title": DOMAINS[chosen]["title"],
+        "op": op,
+        "input": args,
+        "signals": matched,
+        "confidence": confidence,
+        "decided": decided,
+        "executed": False,
+        "route_questions": DOMAINS[chosen]["questions"],
+    }
+    if not decided:
+        decision["question"] = "Which math route should I use for this goal?"
+        decision["options"] = sorted(DOMAINS)
+        decision["text"] = format_decision(decision)
+        return decision
+
+    if not auto:
+        decision["text"] = format_decision(decision)
+        return decision
+
+    result = compute(op, args, domain=chosen, goal=goal, target=target)
+    decision["executed"] = True
+    decision["evidence_ref"] = str(result.get("evidence_ref") or "")
+    decision["text"] = format_decision(decision, result)
+    result.update({k: v for k, v in decision.items() if k != "ok"})
+    result["ok"] = bool(result.get("ok"))
+    result["action"] = "decide"
     return result
 
 
@@ -412,6 +522,35 @@ def rh_status() -> Dict[str, Any]:
     return {"ok": True, "action": "rh_status", **RH_STATUS, "text": format_rh()}
 
 
+def format_decision(data: Dict[str, Any], result: Optional[Dict[str, Any]] = None) -> str:
+    lines = [
+        "NEUTRAL DECISION LINK",
+        f"  goal: {str(data.get('goal') or '-')[:240]}",
+    ]
+    if not data.get("decided"):
+        lines.extend([
+            "  decision: NOT DECIDED - ask one clarifying question before computing",
+            f"  question: {data.get('question') or 'Which route should I use?'}",
+            f"  options: {', '.join(data.get('options') or [])}",
+        ])
+        return "\n".join(lines)
+    lines.extend([
+        f"  route: {data.get('domain')} ({data.get('title')}) confidence={data.get('confidence')}",
+        f"  signals: {', '.join(data.get('signals') or []) or 'payload only'}",
+        f"  op: {data.get('op')}",
+        f"  input: {json.dumps(data.get('input') or {}, ensure_ascii=False, default=str)[:600]}",
+        f"  questions: {' | '.join(data.get('route_questions') or [])}",
+    ])
+    if result is not None:
+        lines.append(
+            f"  executed: yes | ok={bool(result.get('ok'))} "
+            f"| evidence_ref={result.get('evidence_ref') or '-'}"
+        )
+    else:
+        lines.append("  executed: no | use execute=true or /math auto to run")
+    return "\n".join(lines)
+
+
 def format_card() -> str:
     """Compact status card used by the TUI and agent tool text output."""
     data = _status_data()
@@ -493,6 +632,20 @@ def run(args: Optional[Dict[str, Any]] = None, *, target: str = "") -> Dict[str,
             domain=str(args.get("domain") or ""),
             limit=int(args.get("limit", 8) or 8),
         )
+    if action in ("decide", "route", "plan", "auto"):
+        payload = args.get("input")
+        if not isinstance(payload, dict):
+            payload = args.get("params")
+        if not isinstance(payload, dict):
+            payload = {}
+        flag = args.get("execute", args.get("auto", action == "auto"))
+        return decide(
+            str(args.get("goal") or args.get("objective") or ""),
+            payload,
+            domain=str(args.get("domain") or ""),
+            auto=_boolish(flag),
+            target=target,
+        )
     if action in ("learn", "remember"):
         return learn(
             str(args.get("title") or ""),
@@ -524,7 +677,7 @@ def run(args: Optional[Dict[str, Any]] = None, *, target: str = "") -> Dict[str,
         domain = str(args.get("domain") or "").strip().lower()
         if not op:
             domain = domain or detect_domain(goal, "", payload)
-            op, payload = _default_op(domain, payload)
+            op, payload = _default_op(domain, payload, goal)
         domain = domain or detect_domain(goal, op, payload)
         result = compute(op, payload, domain=domain, goal=goal, target=target)
         result["action"] = "analyze" if action == "analyze" else action
@@ -535,8 +688,8 @@ def run(args: Optional[Dict[str, Any]] = None, *, target: str = "") -> Dict[str,
     if action == "help":
         return {
             "ok": True, "action": "help",
-            "actions": ["analyze", "compute", "verify", "learn", "recall", "status", "domains", "rh_status"],
-            "example": {"action": "analyze", "goal": "check session token entropy", "domain": "prng", "input": {"samples": [1, 2, 3, 4], "test": "entropy"}},
-            "text": "Use math_attack analyze/verify for work, learn after an evidence-backed result, recall before repeating analysis, rh_status for proof status.",
+            "actions": ["decide", "analyze", "compute", "verify", "learn", "recall", "status", "domains", "rh_status"],
+            "example": {"action": "decide", "goal": "check session token entropy", "input": {"samples": [1, 2, 3, 4], "test": "entropy"}},
+            "text": "Use math_attack decide as the neutral link: it picks the route without side effects; add execute=true to run. Then analyze/verify, learn after evidence, recall before repeat work.",
         }
-    return {"ok": False, "error": f"unknown math_attack action: {action}", "supported": ["analyze", "compute", "verify", "learn", "recall", "status", "domains", "rh_status", "help"]}
+    return {"ok": False, "error": f"unknown math_attack action: {action}", "supported": ["decide", "analyze", "compute", "verify", "learn", "recall", "status", "domains", "rh_status", "help"]}
